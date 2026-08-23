@@ -1,0 +1,6 @@
+# dsh-archived-panel bundle patch layer: mounts the archived-sessions client
+# UI plugin. The name resolves to this package (which declares dsh.client), so
+# client-modules bundles its browser half and injects it into the page.
+- insert:
+    - id: dsh-archived-panel
+      name: dsh-archived-panel

@@ -1,0 +1,116 @@
+diff --git a/packages/client/connection/src/client/fixture.ts b/packages/client/connection/src/client/fixture.ts
+index dd0566486e..9bf1f43f5a 100644
+--- a/packages/client/connection/src/client/fixture.ts
++++ b/packages/client/connection/src/client/fixture.ts
+@@ -2694,6 +2694,15 @@ function createFixtureWorld(options: FixtureOptions): FixtureWorld {
+         }
+         return ok(request, { archivedSessionIds: [...archivedSessionIds] })
+       },
++      unarchiveSession: (request) => {
++        const { sessionId } = request.payload
++        const index = archivedSessionIds.indexOf(sessionId)
++        if (index !== -1) {
++          archivedSessionIds.splice(index, 1)
++          emitHost({ type: 'host/archived-sessions-changed', archivedSessionIds: [...archivedSessionIds] })
++        }
++        return ok(request, { archivedSessionIds: [...archivedSessionIds] })
++      },
+     },
+     agentPresets: {
+       // Both trusts appear, because a surface must present a locally authored
+@@ -3105,6 +3114,7 @@ export class FixtureApiClient extends AbstractApiClient {
+       case 'workspace.insertBefore': return this.api.workspace.insertBefore(request)
+       case 'workspace.insertSessionBefore': return this.api.workspace.insertSessionBefore(request)
+       case 'workspace.archiveSession': return this.api.workspace.archiveSession(request)
++      case 'workspace.unarchiveSession': return this.api.workspace.unarchiveSession(request)
+       case 'skill.list': return this.api.skills.list(request)
+       case 'agentPreset.list': return this.api.agentPresets.list(request)
+       case 'agentPreset.select': return this.api.agentPresets.select(request)
+diff --git a/packages/client/connection/tests/fake-api.client.ts b/packages/client/connection/tests/fake-api.client.ts
+index bee4fc0ce0..02850429a5 100644
+--- a/packages/client/connection/tests/fake-api.client.ts
++++ b/packages/client/connection/tests/fake-api.client.ts
+@@ -167,6 +167,9 @@ export class FakeApiClient implements IApiClient {
+     archiveSession: (payload: unknown) => this.record('workspace.archiveSession', payload, Promise.resolve(ok({
+       archivedSessionIds: [(payload as { sessionId: SessionId }).sessionId],
+     }))),
++    unarchiveSession: (payload: unknown) => this.record('workspace.unarchiveSession', payload, Promise.resolve(ok({
++      archivedSessionIds: [],
++    }))),
+   }
+ 
+   // Payloads stay `unknown` (lint-lane note above); response rows are the real
+diff --git a/packages/client/runtime/tests/fake-api.client.ts b/packages/client/runtime/tests/fake-api.client.ts
+index 33a0efbbfd..e8acb804ab 100644
+--- a/packages/client/runtime/tests/fake-api.client.ts
++++ b/packages/client/runtime/tests/fake-api.client.ts
+@@ -204,6 +204,9 @@ export class FakeApiClient implements IApiClient {
+   onWorkspaceArchiveSession: (payload: unknown) => Promise<RpcResponse<{ archivedSessionIds: SessionId[] }>> =
+     payload => Promise.resolve(ok({ archivedSessionIds: [(payload as { sessionId: SessionId }).sessionId] }))
+ 
++  onWorkspaceUnarchiveSession: (payload: unknown) => Promise<RpcResponse<{ archivedSessionIds: SessionId[] }>> =
++    () => Promise.resolve(ok({ archivedSessionIds: [] }))
++
+   readonly workspace: IApiClient['workspace'] = {
+     list: (payload: unknown) => this.record('workspace.list', payload, this.onWorkspaceList(payload).then(response => (
+       response.result.ok
+@@ -219,6 +222,8 @@ export class FakeApiClient implements IApiClient {
+       this.record('workspace.insertSessionBefore', payload, this.onWorkspaceInsertSessionBefore(payload)),
+     archiveSession: (payload: unknown) =>
+       this.record('workspace.archiveSession', payload, this.onWorkspaceArchiveSession(payload)),
++    unarchiveSession: (payload: unknown) =>
++      this.record('workspace.unarchiveSession', payload, this.onWorkspaceUnarchiveSession(payload)),
+   }
+ 
+   // Payloads stay `unknown` (lint-lane note above); response rows are the real
+diff --git a/packages/host/apiproxy/tests/client-handler.spec.ts b/packages/host/apiproxy/tests/client-handler.spec.ts
+index 4130d8f210..b76d032f98 100644
+--- a/packages/host/apiproxy/tests/client-handler.spec.ts
++++ b/packages/host/apiproxy/tests/client-handler.spec.ts
+@@ -88,6 +88,7 @@ function scriptedApi(overrides: {
+       insertBefore: r => ok(r, { workspaceIds: [r.payload.workspaceId] }),
+       insertSessionBefore: r => ok(r, { workspace: { workspaceId: 'w1' as never, path: '/t', title: 't', sessionIds: [], createdAt: '0', updatedAt: '0' } }),
+       archiveSession: r => ok(r, { archivedSessionIds: [r.payload.sessionId] }),
++      unarchiveSession: r => ok(r, { archivedSessionIds: [] }),
+     },
+     skills: { list: r => ok(r, { skills: [] }), ...overrides.skills },
+     agentPresets: {
+diff --git a/packages/host/apiproxy/tests/fetch-carrier.spec.ts b/packages/host/apiproxy/tests/fetch-carrier.spec.ts
+index 2000f708ba..2282b90b4e 100644
+--- a/packages/host/apiproxy/tests/fetch-carrier.spec.ts
++++ b/packages/host/apiproxy/tests/fetch-carrier.spec.ts
+@@ -191,6 +191,9 @@ function fakeApi(overrides: Partial<{ muxFrames: MuxFrame[]; hostFrames: HostFra
+       async archiveSession(request) {
+         return { rpcId: request.rpcId, result: { ok: true, value: { archivedSessionIds: [request.payload.sessionId] } } }
+       },
++      async unarchiveSession(request) {
++        return { rpcId: request.rpcId, result: { ok: true, value: { archivedSessionIds: [] } } }
++      },
+     },
+     agentPresets: {
+       list(request: RpcRequest<{}>) {
+diff --git a/packages/test-support/client-runtime/src/workspaces.ts b/packages/test-support/client-runtime/src/workspaces.ts
+index 4f6b2122cb..98de7d0356 100644
+--- a/packages/test-support/client-runtime/src/workspaces.ts
++++ b/packages/test-support/client-runtime/src/workspaces.ts
+@@ -212,4 +212,20 @@ export class TestWorkspaces implements IWorkspaces {
+       draft.archivedSessionIds = [...draft.archivedSessionIds, sessionId]
+     })
+   }
++
++  /**
++   * Unarchive a session: remove it from the registry-global archive set.
++   * @param sessionId - session to unarchive.
++   */
++  async unarchiveSession(sessionId: SessionId): Promise<void> {
++    this.calls.push({ method: 'unarchiveSession', args: [sessionId] })
++    const stub = this.stubs.get('unarchiveSession')
++    if (stub !== undefined) {
++      await (stub(sessionId) as Promise<void>)
++      return
++    }
++    await this.update((draft) => {
++      draft.archivedSessionIds = draft.archivedSessionIds.filter(id => id !== sessionId)
++    })
++  }
+ }
