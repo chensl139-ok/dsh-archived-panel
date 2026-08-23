@@ -13,6 +13,9 @@
 本 bundle 本身只是*消费*这个方法(特性检测,见 `src/client/index.ts`);
 它**不携带**官方源码改动。没有该补丁时,取消归档按钮会被隐藏,面板退化为「查看 + 打开」。
 
+这些补丁以 DeepSeek Harness `0.1.0-rc.7` 源码树为基线。其他版本必须先用
+`git apply --check` 验证；检查失败时应重新生成或人工迁移补丁。
+
 ## 这个补丁添加了什么
 
 一条端到端接线的新 `unarchiveSession` 能力,完全镜像现有的 `archiveSession`:
@@ -34,8 +37,10 @@
 
 ```sh
 # 在 deepseek-harness 检出的根目录
-git apply --directory=deepseek-harness /path/to/dsh-archived-panel/patches/unarchiveSession.diff
-git apply --directory=deepseek-harness /path/to/dsh-archived-panel/patches/unarchiveSession.tests.diff
+git apply --check /path/to/dsh-archived-panel/patches/unarchiveSession.diff
+git apply --check /path/to/dsh-archived-panel/patches/unarchiveSession.tests.diff
+git apply /path/to/dsh-archived-panel/patches/unarchiveSession.diff
+git apply /path/to/dsh-archived-panel/patches/unarchiveSession.tests.diff
 ```
 
 然后重建受影响包:
@@ -68,6 +73,10 @@ This bundle itself only *consumes* the method (feature-detected, see
 `src/client/index.ts`); it does **not** carry the official-source change.
 Without the patch the button is hidden and the panel degrades to **view + open**.
 
+The patches are based on the DeepSeek Harness `0.1.0-rc.7` source tree. Always
+run `git apply --check` on other versions; regenerate or port the patch when the
+check fails.
+
 ## What the patch adds
 
 A new `unarchiveSession` capability wired end-to-end, mirroring the existing
@@ -90,8 +99,10 @@ A new `unarchiveSession` capability wired end-to-end, mirroring the existing
 
 ```sh
 # from the root of a deepseek-harness checkout
-git apply --directory=deepseek-harness /path/to/dsh-archived-panel/patches/unarchiveSession.diff
-git apply --directory=deepseek-harness /path/to/dsh-archived-panel/patches/unarchiveSession.tests.diff
+git apply --check /path/to/dsh-archived-panel/patches/unarchiveSession.diff
+git apply --check /path/to/dsh-archived-panel/patches/unarchiveSession.tests.diff
+git apply /path/to/dsh-archived-panel/patches/unarchiveSession.diff
+git apply /path/to/dsh-archived-panel/patches/unarchiveSession.tests.diff
 ```
 
 Then rebuild the affected packages:

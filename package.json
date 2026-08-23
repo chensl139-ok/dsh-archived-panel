@@ -1,18 +1,32 @@
 {
   "name": "dsh-archived-panel",
-  "version": "0.1.0",
-  "description": "DSH plugin: a side panel that lists archived sessions, opens them, and unarchives them (unarchive requires the optional unarchiveSession patch).",
+  "version": "0.2.0",
+  "description": "DeepSeek Harness plugin: browse, open, and optionally unarchive archived sessions from the sidebar.",
+  "keywords": [
+    "deepseek-harness",
+    "dsh-plugin",
+    "archived-sessions",
+    "cordis"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chensl139-ok/dsh-archived-panel.git"
+  },
+  "homepage": "https://github.com/chensl139-ok/dsh-archived-panel#readme",
+  "bugs": {
+    "url": "https://github.com/chensl139-ok/dsh-archived-panel/issues"
+  },
   "type": "module",
-  "main": "lib/index.js",
+  "main": "lib/index.mjs",
   "types": "lib/types/index.d.ts",
   "exports": {
     ".": {
       "types": "./lib/types/index.d.ts",
-      "default": "./lib/index.js"
+      "default": "./lib/index.mjs"
     },
     "./client": {
       "types": "./lib/types/client/index.d.ts",
-      "default": "./lib/client.js"
+      "default": "./lib/client.cjs"
     },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./src/*": "./src/*",
@@ -31,28 +45,35 @@
     }
   },
   "files": [
-    "lib/index.js",
-    "lib/client.js",
+    "lib/index.mjs",
+    "lib/client.cjs",
     "lib/types/**/*.d.ts",
     "cordis.patch.yml",
+    "CHANGELOG.md",
     "patches/**/*"
   ],
   "scripts": {
     "build": "tsc -b tsconfig.json && tsdown",
     "prepare": "tsc -b tsconfig.json && tsdown",
-    "clean": "rm -rf lib"
+    "clean": "rm -rf lib",
+    "pack:check": "pnpm pack --dry-run"
   },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "packageManager": "pnpm@11.22.0",
   "license": "MIT",
   "peerDependencies": {
-    "@deepseek-ai/dsh-client-runtime": "^0.1.0",
-    "@deepseek-ai/dsh-client-ui-slots": "^0.1.0",
-    "@deepseek-ai/cordis": "^0.1.0",
+    "@deepseek-ai/dsh-client-runtime": ">=0.1.0-rc.7 <0.2.0",
+    "@deepseek-ai/dsh-client-ui-slots": ">=0.1.0-rc.7 <0.2.0",
+    "@deepseek-ai/cordis": "^4.0.1",
     "react": "^18.2.0"
   },
   "devDependencies": {
-    "@deepseek-ai/dsh-client-runtime": "^0.1.0",
-    "@deepseek-ai/dsh-client-ui-slots": "^0.1.0",
-    "@deepseek-ai/cordis": "^0.1.0",
+    "@deepseek-ai/dsh-client-runtime": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-client-ui-layout": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-client-ui-slots": "0.1.0-rc.7",
+    "@deepseek-ai/cordis": "^4.0.1",
     "@types/react": "~18.3.1",
     "react": "^18.2.0",
     "tsdown": "^0.22.2",

@@ -29,6 +29,16 @@ const EXTERNALS = [
 
 export default defineConfig([
   {
+    name: 'dsh-archived-panel/host',
+    entry: { index: 'src/index.ts' },
+    outDir: 'lib',
+    format: 'esm',
+    platform: 'node',
+    dts: false,
+    sourcemap: true,
+    clean: false,
+  },
+  {
     name: 'dsh-archived-panel/client',
     entry: { client: 'src/client/index.ts' },
     outDir: 'lib',
@@ -37,12 +47,14 @@ export default defineConfig([
     dts: false,
     sourcemap: true,
     clean: false,
-    external: [...EXTERNALS],
+    deps: {
+      neverBundle: [...EXTERNALS],
+      alwaysBundle: (id: string) => (EXTERNALS.includes(id) ? undefined : true),
+    },
     // The loader table answers tsdown's auto-externalized package deps; a
     // require the table cannot answer is a guaranteed runtime throw, so the
     // rule is the table list itself: external wins above, bundle everything
     // else (pure wire/type layers inline).
-    noExternal: (id: string) => (EXTERNALS.includes(id) ? undefined : true),
     // zustand/immer (via runtime) read process.env.NODE_ENV and probe
     // import.meta.env.MODE; a CJS output cannot carry import.meta, so define
     // both substitutions or the factory throws at boot.
