@@ -1,0 +1,16 @@
+# Normalize line endings so Windows/macOS/Linux checkouts don't churn.
+* text=auto
+
+# Diff .tsconfig/package files textually.
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.md text eol=lf
+
+# Binaries and build output.
+*.png binary
+*.jpg binary
+*.gif binary
+lib/ -text

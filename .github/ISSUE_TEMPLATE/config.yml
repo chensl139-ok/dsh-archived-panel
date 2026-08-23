@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: DeepSeek Harness upstream discussions
+    url: https://github.com/deepseek-ai/deepseek-harness/discussions
+    about: For upstream `deepseek-harness` questions (the unarchive patch lives there).
