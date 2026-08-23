@@ -9,7 +9,8 @@
 - 显示已归档会话的标题、工作区和相对时间。
 - 点击会话即可重新打开。
 - Host 支持 `unarchiveSession` 时可以取消归档。
-- Host 尚未安装补丁时自动隐藏取消归档按钮，查看和打开功能不受影响。
+- Host 支持 `deleteSession` 时可以**永久删除**已归档会话（删除前会二次确认）。
+- Host 尚未安装补丁时自动隐藏对应的操作按钮，查看和打开功能不受影响。
 
 插件以 DSH bundle 分发：`cordis.patch.yml` 挂载 Host 条目，浏览器功能由 `dsh.client` bundle 加载。
 
@@ -72,6 +73,35 @@ WorkspaceRegistry.unarchiveSession
 
 补丁涉及的文件、测试支持和限制详见 [`patches/README.md`](./patches/README.md)。应用前务必运行 `git apply --check`；如果目标 DSH 版本不同，请重新生成或人工迁移补丁，不要强制应用。
 
+> 未启用取消归档补丁时，仅能查看和打开。启用后可取消归档；启用删除补丁后可永久删除。删除会调用 `ctx.workspaces.deleteSession(id)`，由 Host 拆除会话日志（`sessionPersistence.delete`）并从所有工作区与归档集中移除该会话。正在进行的会话不会被删除（Host 返回 `session-live` 错误）。
+
+### 启用删除
+
+删除是破坏性操作：它会永久删除会话的持久化日志，并从工作区和归档集中摘除。需要把删除补丁应用到已应用取消归档补丁的 DeepSeek Harness `0.1.0-rc.7` 源码检出：
+
+```sh
+# 在 deepseek-harness 仓库根目录执行（取消归档补丁已应用）
+git apply --check /path/to/dsh-archived-panel/patches/deleteSession.diff
+git apply --check /path/to/dsh-archived-panel/patches/deleteSession.tests.diff
+git apply /path/to/dsh-archived-panel/patches/deleteSession.diff
+git apply /path/to/dsh-archived-panel/patches/deleteSession.tests.diff
+
+pnpm run build:lib:host
+pnpm run build:lib:client
+```
+
+补丁提供的完整链路：
+
+```text
+WorkspaceRegistry.detachSession + sessionPersistence.delete
+  → workspace.deleteSession RPC
+  → fetch client/runtime
+  → ctx.workspaces.deleteSession
+  → 已归档面板 🗑 按钮
+```
+
+`deleteSession.diff` 基于“已应用 `unarchiveSession` 补丁”的源码生成；如果尚未应用取消归档补丁，先把两个补丁都应用一遍。涉及文件与限制详见 [`patches/README.md`](./patches/README.md)。
+
 ### 本地开发
 
 ```sh
@@ -102,7 +132,8 @@ pnpm run pack:check
 - Shows each archived session's title, workspace, and relative time.
 - Opens a session when its row is selected.
 - Unarchives sessions when the Host exposes `unarchiveSession`.
-- Hides the unarchive action when the patch is unavailable; browsing and opening still work.
+- Permanently deletes archived sessions when the Host exposes `deleteSession` (with a confirmation prompt).
+- Hides the action buttons when their patch is unavailable; browsing and opening still work.
 
 The plugin is distributed as a DSH bundle: `cordis.patch.yml` mounts the Host entry and the browser feature is loaded through its `dsh.client` bundle.
 
@@ -164,6 +195,35 @@ WorkspaceRegistry.unarchiveSession
 ```
 
 See [`patches/README.md`](./patches/README.md) for affected files, test support, and limitations. Always run `git apply --check` first. If the target DSH version differs, regenerate or port the patch instead of forcing it.
+
+> Without the unarchive patch you can only browse and open. With it you can unarchive; with the delete patch you can permanently delete. Delete calls `ctx.workspaces.deleteSession(id)`, which has the Host tear down the session log (`sessionPersistence.delete`) and remove the session from every workspace and the archive set. A live session is refused with a `session-live` error.
+
+### Enable delete
+
+Delete is destructive: it permanently removes the session's durable log and detaches it from workspace and archive sets. Apply the delete patch to a DeepSeek Harness `0.1.0-rc.7` source checkout that already has the unarchive patch applied:
+
+```sh
+# Run from the root of the deepseek-harness repository (unarchive patch already applied)
+git apply --check /path/to/dsh-archived-panel/patches/deleteSession.diff
+git apply --check /path/to/dsh-archived-panel/patches/deleteSession.tests.diff
+git apply /path/to/dsh-archived-panel/patches/deleteSession.diff
+git apply /path/to/dsh-archived-panel/patches/deleteSession.tests.diff
+
+pnpm run build:lib:host
+pnpm run build:lib:client
+```
+
+The patch supplies the complete path:
+
+```text
+WorkspaceRegistry.detachSession + sessionPersistence.delete
+  → workspace.deleteSession RPC
+  → fetch client/runtime
+  → ctx.workspaces.deleteSession
+  → Archived panel 🗑 button
+```
+
+`deleteSession.diff` is generated against a source tree that already has `unarchiveSession` applied; if you have not applied unarchive yet, apply both patches. See [`patches/README.md`](./patches/README.md) for the affected files and limitations.
 
 ### Local development
 

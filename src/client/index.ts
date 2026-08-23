@@ -2,16 +2,19 @@
  * Archived-sessions panel, browser half: an 已归档 trigger anchored to the
  * left rail via the frame-wide shell.overlay slot. Clicking it opens a
  * dropdown listing every archived session (title / workspace / relative
- * time); clicking a row opens that session; a trailing button unarchives it.
+ * time); clicking a row opens that session; trailing buttons unarchive or
+ * permanently delete it.
  *
  * Reads ride the shell.overlay standard hooks (`useSessions`,
  * `useWorkspaces`); opening uses `ctx.sessions.open`. All styling is inline
  * so the bundle carries no CSS-module dependency.
  *
- * The unarchive action calls `ctx.workspaces.unarchiveSession(id)` when that
- * service method exists. On a stock DSH host that method is absent (it comes
- * from the optional official-source patch in ./patches), so the button is
- * hidden rather than throwing — the panel degrades to view + open.
+ * The unarchive action calls `ctx.workspaces.unarchiveSession(id)` and the
+ * delete action calls `ctx.workspaces.deleteSession(id)` when those service
+ * methods exist. On a stock DSH host the methods are absent (they come from
+ * the optional official-source patches in ./patches), so the buttons are
+ * hidden rather than throwing — the panel degrades to view + open. Delete is
+ * destructive, so it prompts for confirmation first.
  */
 
 import * as React from 'react'
@@ -54,14 +57,16 @@ interface ArchivedSessionRow {
   updatedAt: number
 }
 
-/** Render one archived-session row; clicking the body opens it, the trailing button unarchives it. */
+/** Render one archived-session row; clicking the body opens it, the trailing buttons unarchive / delete it. */
 function ArchivedRow(props: {
   id: string
   title: string
   meta: string
   canUnarchive: boolean
+  canDelete: boolean
   onOpen: (id: string) => void
   onUnarchive: (id: string) => void
+  onDelete: (id: string) => void
 }) {
   const unarchiveButton = props.canUnarchive
     ? React.createElement('button', {
@@ -75,6 +80,19 @@ function ArchivedRow(props: {
         fontFamily: 'inherit', fontSize: '11px', whiteSpace: 'nowrap',
       },
     }, '取消归档')
+    : null
+  const deleteButton = props.canDelete
+    ? React.createElement('button', {
+      type: 'button',
+      onClick: () => props.onDelete(props.id),
+      title: '删除',
+      'aria-label': '删除',
+      style: {
+        flex: '0 0 auto', padding: '4px 7px', border: '0', borderRadius: '6px', cursor: 'pointer',
+        background: 'transparent', color: 'var(--dsw-alias-color-danger, #d0334b)',
+        fontFamily: 'inherit', fontSize: '13px', lineHeight: '1', whiteSpace: 'nowrap',
+      },
+    }, '🗑')
     : null
   return React.createElement('div', {
     key: props.id,
@@ -94,11 +112,12 @@ function ArchivedRow(props: {
       React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, props.meta),
     ),
     unarchiveButton,
+    deleteButton,
   )
 }
 
 /** The left-rail trigger plus its dropdown, hosted on the overlay slot. */
-function ArchivedPanel(props: ArchivedPanelProps & { open: (id: string) => void; onUnarchive: (id: string) => void; canUnarchive: boolean }) {
+function ArchivedPanel(props: ArchivedPanelProps & { open: (id: string) => void; onUnarchive: (id: string) => void; canUnarchive: boolean; onDelete: (id: string) => void; canDelete: boolean }) {
   const [openList, setOpenList] = React.useState(false)
   // Panel width tracks the rendered sidebar column (default 280px, min 264,
   // max 420). The sidebar slot anchor is a `display:contents` wrapper (width
@@ -164,7 +183,7 @@ function ArchivedPanel(props: ArchivedPanelProps & { open: (id: string) => void;
   } else {
     for (const s of rows) {
       const meta = `${workspaceTitleOf(workspaces, s.id)} · ${relTime(s.updatedAt)}`
-      body.push(React.createElement(ArchivedRow, { id: s.id, title: s.title, meta, canUnarchive: props.canUnarchive, onOpen: openSession, onUnarchive: props.onUnarchive }))
+      body.push(React.createElement(ArchivedRow, { id: s.id, title: s.title, meta, canUnarchive: props.canUnarchive, canDelete: props.canDelete, onOpen: openSession, onUnarchive: props.onUnarchive, onDelete: props.onDelete }))
     }
   }
 
@@ -202,9 +221,11 @@ export function apply(ctx: ClientContext): void {
   ctx.inject(['slots', 'workspaces'], (scope: ClientContext) => {
     const sessions = scope.sessions
     const workspaces = scope.workspaces
-    // Feature-detect the patch-provided unarchive capability: on a stock DSH
-    // host the method is absent, so we hide the button instead of throwing.
+    // Feature-detect the patch-provided unarchive / delete capabilities: on a
+    // stock DSH host the methods are absent, so we hide the buttons instead of
+    // throwing — the panel degrades to view + open.
     const canUnarchive = typeof (workspaces as { unarchiveSession?: unknown }).unarchiveSession === 'function'
+    const canDelete = typeof (workspaces as { deleteSession?: unknown }).deleteSession === 'function'
     scope.slots.inject('shell.overlay', () => scope.slots.register({
       name: 'shell.overlay',
       id: 'dsh-archived',
@@ -216,7 +237,19 @@ export function apply(ctx: ClientContext): void {
         const target = workspaces as { unarchiveSession?: (id: SessionId) => Promise<void> }
         if (typeof target.unarchiveSession === 'function') void target.unarchiveSession(id as SessionId)
       }
-      return React.createElement(ArchivedPanel, { ...props, open, onUnarchive: unarchive, canUnarchive })
+      const del = (id: string) => {
+        // Destructive and irreversible: confirm before the host tears down the
+        // durable session log. A live session is refused host-side with
+        // session-live; surface that (and any other failure) to the user.
+        if (!window.confirm('确定删除该已归档会话?此操作将永久删除会话记录,不可恢复。')) return
+        const target = workspaces as { deleteSession?: (id: SessionId) => Promise<void> }
+        if (typeof target.deleteSession !== 'function') return
+        void target.deleteSession(id as SessionId).catch((e: unknown) => {
+          console.error('archived delete failed:', e)
+          window.alert(`删除失败:${e instanceof Error ? e.message : String(e)}`)
+        })
+      }
+      return React.createElement(ArchivedPanel, { ...props, open, onUnarchive: unarchive, canUnarchive, onDelete: del, canDelete })
     }))
   })
 }
