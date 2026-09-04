@@ -1,7 +1,7 @@
 {
   "name": "dsh-archived-panel",
-  "version": "0.2.0",
-  "description": "DeepSeek Harness plugin: browse, open, and optionally unarchive archived sessions from the sidebar.",
+  "version": "0.3.0",
+  "description": "DeepSeek Harness plugin: browse, open, optionally unarchive, and permanently delete archived sessions from the sidebar.",
   "keywords": [
     "deepseek-harness",
     "dsh-plugin",
