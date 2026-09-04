@@ -124,34 +124,120 @@ index 8633faa886..5d5ea7967b 100644
      // --- write path: live session → flush → reload ---
  
      it('persists a live session driven through the store, surviving reload', async () => {
+diff --git a/packages/session/session-projection-cache/README.i18n.yaml b/packages/session/session-projection-cache/README.i18n.yaml
+index 609f146f24..ce5d2a930c 100644
+--- a/packages/session/session-projection-cache/README.i18n.yaml
++++ b/packages/session/session-projection-cache/README.i18n.yaml
+@@ -2,5 +2,5 @@
+ # side as of the last confirmed-consistent state. Both languages carry equal authority;
+ # after editing either side, bring the other along and re-record with:
+ #   pnpm run verify-translation-pairing --write packages/session/session-projection-cache/README.md
+-README.md: 33908578a5127f2b6bb78ed7467833aaaa2cf085
+-README.zh.md: 0ca410f91562360d85faadf4cf64cb61ac467482
++README.md: c2fe5fb042caf4575b9aa7c5b6569768c48d6182
++README.zh.md: 83f8ed0523b7e4097224714993131cfe06fd2455
+diff --git a/packages/session/session-projection-cache/README.md b/packages/session/session-projection-cache/README.md
+index 33908578a5..c2fe5fb042 100644
+--- a/packages/session/session-projection-cache/README.md
++++ b/packages/session/session-projection-cache/README.md
+@@ -13,6 +13,8 @@ A stored row `(key → {ver, seq, val})` is a fold shortcut, never an authority:
+ - **Records are bound to a log lifecycle, not just an id.** Each record stores the header identity (`createdAt`, `cwd`) it was folded from; every read validates it (the live or stored header is the witness) before accepting a row, so a deleted-then-recreated id or a persistence store swapped under a surviving cache discards the unrelated record instead of seeding phantom values.
+ - **The log leads, the cache follows.** A live checkpoint flushes the session's buffered events durably BEFORE the cache row lands, so a crash can leave the cache behind the log (a longer tail replay) but never ahead of it.
+ 
++Deletion calls `remove(id)` after the live owner and durable log are gone. It removes the checkpoint and suppresses late writes from the old lifecycle; a new `session/created` permits checkpoints for a reused ID.
++
+ ## Write policy
+ 
+ Two mandatory points, throttled in between:
+diff --git a/packages/session/session-projection-cache/README.zh.md b/packages/session/session-projection-cache/README.zh.md
+index 0ca410f915..83f8ed0523 100644
+--- a/packages/session/session-projection-cache/README.zh.md
++++ b/packages/session/session-projection-cache/README.zh.md
+@@ -13,6 +13,8 @@
+ - **记录绑定到日志生命周期，而不只是 id。** 每条记录存储其折叠来源的 header 身份（`createdAt`、`cwd`）；每次读取先以活 header 或存储 header 为证验证它，再接受任何行——被删后重建的 id、或缓存幸存而持久化存储被换掉时，无关记录被整体丢弃，绝不播种幻影值。
+ - **日志领先，缓存跟随。** 活会话检查点先把缓冲事件持久 flush，缓存行才落地，因此崩溃只会让缓存落后于日志（更长的尾部回放），绝不领先于它。
+ 
++删除流程在运行实例和持久化日志移除后调用 `remove(id)`，清理检查点并阻止旧生命周期的延迟写入。新的 `session/created` 事件允许复用 ID 的新生命周期写入检查点。
++
+ ## 写策略
+ 
+ 两个必写点，其间节流：
+diff --git a/packages/session/session-projection-cache/tests/cache.spec.ts b/packages/session/session-projection-cache/tests/cache.spec.ts
+index 89154ec108..938e1b8cf1 100644
+--- a/packages/session/session-projection-cache/tests/cache.spec.ts
++++ b/packages/session/session-projection-cache/tests/cache.spec.ts
+@@ -125,6 +125,27 @@ afterEach(async () => {
+ })
+ 
+ describe('SessionProjectionCache write policy', () => {
++  it('removes detached checkpoints, blocks late writes, and permits a new lifecycle', async () => {
++    const { ctx, pool, cache } = await harness()
++    let session!: Session
++    const id = SessionId('deleted-checkpoint')
++    const owner = await ctx.plugin(Object.assign((inner: Context) => {
++      session = inner.sessions.create(id)
++    }, { inject: ['sessions'] }))
++    mark(session, ['old'])
++    await cache.write(session)
++    await expect(cache.remove(id)).rejects.toThrow('live session')
++    await owner.dispose()
++    await cache.remove(id)
++    await cache.write(session)
++    await settle()
++    expect(storedRecord(pool, id)).toBeUndefined()
++    const successor = ctx.sessions.create(id)
++    mark(successor, ['new'])
++    await cache.write(successor)
++    expect(storedRows(pool, id)?.['cache-test/marks']?.val).toEqual({ marks: ['new'] })
++  })
++
+   it('writes a durable checkpoint at turn/end (mandatory point)', async () => {
+     const { ctx, pool } = await harness()
+     const session = ctx.sessions.create(SessionId('turn-end'))
 diff --git a/apps/web/tests/archived-delete.snapshot.ts b/apps/web/tests/archived-delete.snapshot.ts
 new file mode 100644
-index 0000000000..ef70f173e0
+index 0000000000..2a64ef9322
 --- /dev/null
 +++ b/apps/web/tests/archived-delete.snapshot.ts
-@@ -0,0 +1,40 @@
+@@ -0,0 +1,57 @@
 +/** Keyless real Web composition: delete a host-owned idle session with queued writes. */
 +import { expect, it } from 'vitest'
++import { readFile } from 'node:fs/promises'
 +import { SessionId } from '@deepseek-ai/dsh-session'
 +import { RpcId } from '@deepseek-ai/dsh-host-apiproxy/api/rpc'
-+import { launchWebScaffold } from './scaffold.ts'
++import { launchWebScaffold, seedSession } from './scaffold.ts'
 +
-+it('permanently removes an archived idle session from the running host and durable store', async () => {
++it.each(['created', 'resumed', 'forked'])('permanently removes an archived %s session', async (kind) => {
 +  const scaffold = await launchWebScaffold()
 +  const { ctx } = scaffold
-+  const sessionId = SessionId('archive-delete-regression')
++  let sessionId = SessionId('archive-delete-regression')
 +  let sequence = 0
 +  const request = <P>(payload: P) => ({ rpcId: RpcId(`delete-${++sequence}`), payload })
 +  try {
-+    const created = await ctx.apiProxy.sessions.create(request({ sessionId, cwd: scaffold.workspaceCwd }))
-+    expect(created.result.ok).toBe(true)
-+    const session = ctx.sessions.get(sessionId)!
-+    // A completed turn remains queued in the real persistence write-behind.
-+    session.append('turn/start', { turn: 1 })
-+    session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
++    if (kind === 'resumed') {
++      await seedSession(scaffold, await readFile(new URL('./snapshots/seeded-history/seed.jsonl', import.meta.url), 'utf8'), sessionId)
++      expect(ctx.agents.get(sessionId)).toBeUndefined()
++      expect((await ctx.apiProxy.sessions.rename(request({ sessionId, title: 'Resume then delete' }))).result.ok).toBe(true)
++      expect(ctx.agents.get(sessionId)).toBeDefined()
++    } else {
++      const created = await ctx.apiProxy.sessions.create(request({ sessionId, cwd: scaffold.workspaceCwd }))
++      expect(created.result.ok).toBe(true)
++      const session = ctx.sessions.get(sessionId)!
++      session.append('turn/start', { turn: 1 })
++      session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
++      if (kind === 'forked') {
++        const result = (await ctx.apiProxy.sessions.fork(request({ sessionId }))).result
++        expect(result.ok).toBe(true)
++        if (!result.ok) throw new Error(result.error.message)
++        sessionId = result.value.sessionId
++      }
++    }
++    const header = ctx.sessions.get(sessionId)!.header
++    await ctx.sessionProjectionCache.write(ctx.sessions.get(sessionId)!)
 +    expect((await ctx.apiProxy.workspace.archiveSession(request({ sessionId }))).result.ok).toBe(true)
 +    expect((await ctx.apiProxy.workspace.deleteSession(request({ sessionId }))).result.ok).toBe(true)
 +    const view = {
++      cached: ctx.sessionProjectionCache.cachedSnapshot(header) !== undefined,
 +      liveSession: ctx.sessions.get(sessionId) !== undefined,
 +      liveAgent: ctx.agents.get(sessionId) !== undefined,
 +      archived: ctx.workspaceRegistry.archivedSessionIds.includes(sessionId),
@@ -162,6 +248,7 @@ index 0000000000..ef70f173e0
 +      {
 +        "archived": false,
 +        "attached": false,
++        "cached": false,
 +        "liveAgent": false,
 +        "liveSession": false,
 +        "persisted": false,
@@ -172,7 +259,7 @@ index 0000000000..ef70f173e0
 +})
 diff --git a/.agents/notes/implemented/bug-fix/2026-09-05-complete-session-deletion.i18n.yaml b/.agents/notes/implemented/bug-fix/2026-09-05-complete-session-deletion.i18n.yaml
 new file mode 100644
-index 0000000000..299f252afa
+index 0000000000..1c12bac100
 --- /dev/null
 +++ b/.agents/notes/implemented/bug-fix/2026-09-05-complete-session-deletion.i18n.yaml
 @@ -0,0 +1,6 @@
@@ -180,11 +267,11 @@ index 0000000000..299f252afa
 +# side as of the last confirmed-consistent state. Both languages carry equal authority;
 +# after editing either side, bring the other along and re-record with:
 +#   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-09-05-complete-session-deletion.md
-+2026-09-05-complete-session-deletion.md: 3b829cc73acdb45584c77db6e3dfd3b641495952
-+2026-09-05-complete-session-deletion.zh.md: b2831235ae86207460e51e359a9a74574e86f21b
++2026-09-05-complete-session-deletion.md: 23871cb127b614b505146fd50b9b45ecfce93389
++2026-09-05-complete-session-deletion.zh.md: 6955136612eaefc6335c8315d5294c159e558bc8
 diff --git a/.agents/notes/implemented/bug-fix/2026-09-05-complete-session-deletion.zh.md b/.agents/notes/implemented/bug-fix/2026-09-05-complete-session-deletion.zh.md
 new file mode 100644
-index 0000000000..b2831235ae
+index 0000000000..6955136612
 --- /dev/null
 +++ b/.agents/notes/implemented/bug-fix/2026-09-05-complete-session-deletion.zh.md
 @@ -0,0 +1,22 @@
@@ -199,7 +286,7 @@ index 0000000000..b2831235ae
 +
 +## Decision
 +
-+API 网关保留创建或恢复会话返回的 AgentHandle。删除拒绝运行中、生命周期转换中或由其他组件持有的会话。它先释放自己持有的闲置实例，再删除持久化记录，最后清理工作区和归档索引。删除期间拒绝创建同一会话。
++API 网关保留创建、分叉或恢复会话返回的 AgentHandle。Remote 解析器将恢复操作交给同一网关所有者，包括通过 Typert 打开的历史会话。删除拒绝运行中、生命周期转换中或由其他组件持有的会话。它先释放自己持有的闲置实例，再删除持久化记录，最后清理投影检查点、工作区和归档索引。缓存会阻止延迟写入，直到新的会话生命周期开始。删除期间拒绝创建同一会话。
 +
 +持久化层拒绝仍存活的会话，并在进入按 ID 串行的删除队列前等待退役写入完成。后端失败时保留跟踪状态供重试。归档界面保留元数据已消失的 ID，使部分失败后仍能重试。
 +
@@ -209,10 +296,10 @@ index 0000000000..b2831235ae
 +
 +## Consequences
 +
-+Host 必须重启才能建立新的所有权记录。运行中的会话需要完成或停止后再删除。网关只释放自己持有的 Agent。定向测试覆盖存储失败重试和外部所有权；JSONL、SQLite 契约测试验证删除后重新打开存储仍无记录。无密钥的真实 Web 组合快照验证运行时和持久化的五个视图均无残留。
++Host 必须重启才能建立新的所有权记录。运行中的会话需要完成或停止后再删除。网关只释放自己持有的 Agent。定向测试覆盖存储失败重试和外部所有权；JSONL、SQLite 契约测试验证删除后重新打开存储仍无记录。无密钥的真实 Web 组合快照验证运行时和持久化的六个视图均无残留。
 diff --git a/.agents/notes/implemented/bug-fix/2026-09-05-complete-session-deletion.md b/.agents/notes/implemented/bug-fix/2026-09-05-complete-session-deletion.md
 new file mode 100644
-index 0000000000..3b829cc73a
+index 0000000000..23871cb127
 --- /dev/null
 +++ b/.agents/notes/implemented/bug-fix/2026-09-05-complete-session-deletion.md
 @@ -0,0 +1,22 @@
@@ -227,7 +314,7 @@ index 0000000000..3b829cc73a
 +
 +## Decision
 +
-+The API gateway retains the AgentHandle it receives when creating or resuming sessions. Deletion refuses running, transitioning, or externally owned sessions. It disposes its owned idle handle, then asks persistence to delete, then removes workspace and archive indexes. Creation is rejected while deletion is in progress.
++The API gateway retains the AgentHandle it receives when creating, forking, or resuming sessions. The Remote resolver delegates resume to that same gateway owner, including history opened through Typert. Deletion refuses running, transitioning, or externally owned sessions. It disposes its owned idle handle, then asks persistence to delete, then removes projection checkpoints, workspace and archive indexes. The cache suppresses late writes until a new session lifecycle starts. Creation is rejected while deletion is in progress.
 +
 +Persistence rejects live sessions and awaits retirement before entering its per-id deletion queue. Backend failure preserves tracked state for retry. The archive UI retains IDs whose metadata disappeared, so partial failures remain actionable.
 +
@@ -237,4 +324,4 @@ index 0000000000..3b829cc73a
 +
 +## Consequences
 +
-+Hosts must restart to acquire the new ownership bookkeeping. Running sessions must finish or stop before deletion. The gateway only disposes agents it owns. Focused tests cover storage failure retry and foreign ownership; JSONL and SQLite contract tests reopen storage after deletion. A keyless real Web composition snapshot asserts absence from all five runtime and persistence views.
++Hosts must restart to acquire the new ownership bookkeeping. Running sessions must finish or stop before deletion. The gateway only disposes agents it owns. Focused tests cover storage failure retry and foreign ownership; JSONL and SQLite contract tests reopen storage after deletion. A keyless real Web composition snapshot asserts absence from all six runtime and persistence views.

@@ -1,3 +1,9 @@
+# 0.4.1 — 2026-09-05
+
+- Fix false `session-live` rejection after opening history through the Remote/Typert resolver or forking a session: retain disposal handles on both paths.
+- Remove durable projection checkpoints and block delayed writes from restoring deleted cache rows.
+- Verify all three creation paths with real Web composition snapshots. Add an incremental upgrade patch for hosts already using 0.4.0.
+
 # 0.4.0 — 2026-09-05
 
 - Fix deletion lifecycle in the new `deleteSession-complete.diff` Host patch: dispose owned idle agents, drain retired writes outside the queue, then remove durable records and indexes.

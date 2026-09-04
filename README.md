@@ -77,7 +77,7 @@ WorkspaceRegistry.unarchiveSession
 
 > 未启用取消归档补丁时，仅能查看和打开。启用后可取消归档；启用删除补丁后可永久删除。删除会调用 `ctx.workspaces.deleteSession(id)`，由 Host 拆除会话日志（`sessionPersistence.delete`）并从所有工作区与归档集中移除该会话。正在进行的会话不会被删除（Host 返回 `session-live` 错误）。
 
-### 修复删除不彻底（0.4.0）
+### 修复删除不彻底（0.4.1）
 
 仅更新前端不能修复 Host 删除。新增 [`deleteSession-complete.diff`](patches/deleteSession-complete.diff) 修复闲置 Agent 未释放和最终写入互相等待的问题；配套测试覆盖 JSONL / SQLite 重开后无残留。请按 [补丁说明](patches/README.md) 校验适用基线、应用补丁、重建并重启 DSH。运行中的会话仍会拒绝删除；删除失败保留归档入口供重试。
 
@@ -206,7 +206,7 @@ See [`patches/README.md`](./patches/README.md) for affected files, test support,
 
 > Without the unarchive patch you can only browse and open. With it you can unarchive; with the delete patch you can permanently delete. Delete calls `ctx.workspaces.deleteSession(id)`, which has the Host tear down the session log (`sessionPersistence.delete`) and remove the session from every workspace and the archive set. A live session is refused with a `session-live` error.
 
-### Fix incomplete deletion (0.4.0)
+### Fix incomplete deletion (0.4.1)
 
 Updating the frontend alone cannot fix Host deletion. The new [`deleteSession-complete.diff`](patches/deleteSession-complete.diff) releases owned idle agents and drains retirement outside the write queue. Tests verify absence after reopening JSONL / SQLite. Follow the [patch instructions](patches/README.md), check the baseline, rebuild and restart DSH. Running sessions are still refused; failed deletions remain available to retry.
 

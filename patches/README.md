@@ -1,3 +1,17 @@
+# 0.4.1：历史 / 分叉会话删除修复
+
+已应用 0.4.0 的两个 `deleteSession-complete` 补丁时，只应用新增的 `deleteSession-0.4.1.diff`：
+
+```sh
+git apply --check /path/to/dsh-archived-panel/patches/deleteSession-0.4.1.diff
+git apply /path/to/dsh-archived-panel/patches/deleteSession-0.4.1.diff
+pnpm run build:lib:host
+```
+
+然后重启 DSH。该补修覆盖历史恢复和分叉路径的释放句柄，并清理持久化展示缓存。全新安装使用下方更新后的 `deleteSession-complete` 两个补丁，不要重复应用升级补丁。
+
+For a host already patched with 0.4.0, apply only `deleteSession-0.4.1.diff`, rebuild and restart. It fixes ownership tracking for resumed and forked sessions and removes durable projection caches. New installations use the updated complete patches below; do not apply both routes.
+
 # 0.4.0：删除不彻底修复 / Complete deletion fix
 
 新增 `deleteSession-complete.diff` 和 `deleteSession-complete.tests.diff` 是**增量修复**，基于 `chensl139-ok/deepseek-harness` 提交 `8eb6aa069af605a3d6277dc301190ddeea3bb972`（已具备删除 RPC）。已对该提交导出的源码验证 `git apply --check`。它们不是针对干净的官方 rc.7；其他版本请迁移对应函数并运行测试。

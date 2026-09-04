@@ -1,5 +1,40 @@
+diff --git a/packages/api/remotes/src/agent-lookup.ts b/packages/api/remotes/src/agent-lookup.ts
+index 3551d6b1a8..26609c5a22 100644
+--- a/packages/api/remotes/src/agent-lookup.ts
++++ b/packages/api/remotes/src/agent-lookup.ts
+@@ -1,7 +1,7 @@
+ /** Host BFF policy for resolving Remote Agent and Session identities. */
+ 
+ import type { Context } from '@deepseek-ai/cordis'
+-import type { Agent, AgentOptions, AgentSetup } from '@deepseek-ai/dsh-agent'
++import type { Agent, AgentHandle, AgentOptions, AgentSetup, ResumeAgentOptions } from '@deepseek-ai/dsh-agent'
+ import type { Session, SessionEvent, SessionHeader, SessionId } from '@deepseek-ai/dsh-session'
+ import type {} from '@deepseek-ai/dsh-session-persistence'
+ import { TypertLookupFailure } from '@deepseek-ai/dsh-typert-protocol'
+@@ -20,6 +20,12 @@ export type ApiRemoteAgentResult =
+ 
+ /** Resume configuration supplied by the owning Host composition. */
+ export interface ApiRemoteAgentOptions {
++  /**
++   * Resume through the Host lifecycle owner so it retains the disposal capability.
++   * @param options - inspected session identity and composed setup.
++   * @returns the owned resumed agent handle.
++   */
++  readonly resumeAgent?: (options: ResumeAgentOptions) => Promise<AgentHandle>
+   /** Read the per-Agent defaults when a cold identity must resume. */
+   readonly agentOptions?: () => AgentOptions
+   /**
+@@ -159,7 +165,7 @@ export function createApiRemoteAgentResolver(
+             && hasApiRemoteSubagentOwner(ctx, publishedSession, publishedAgent)) {
+             throw new ApiRemoteSubagentSessionOwnership(sessionId)
+           }
+-          const handle = await ctx.agents.resume({
++          const handle = await (options.resumeAgent ?? (request => ctx.agents.resume(request)))({
+             resumeSessionId: sessionId,
+             ...options.agentOptions === undefined ? {} : { agentOptions: options.agentOptions() },
+             ...setup === undefined ? {} : { setup },
 diff --git a/packages/host/apiproxy/src/api-proxy.ts b/packages/host/apiproxy/src/api-proxy.ts
-index 5a00d8fa06..5e21cbb40c 100644
+index 5a00d8fa06..7044f1065c 100644
 --- a/packages/host/apiproxy/src/api-proxy.ts
 +++ b/packages/host/apiproxy/src/api-proxy.ts
 @@ -10,7 +10,7 @@ import { dirname } from 'node:path'
@@ -11,16 +46,34 @@ index 5a00d8fa06..5e21cbb40c 100644
  import type {} from '@deepseek-ai/dsh-agent-presets/types'
  import { AttachmentError, admitEncodedImages } from '@deepseek-ai/dsh-attachment'
  import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
-@@ -1066,6 +1066,8 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
+@@ -1066,6 +1066,9 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
    const presetSwitches = new Map<SessionId, Promise<unknown>>()
    /** Client-chosen identity creation/resume, deduplicated across concurrent retries. */
    const sessionCreations = new Map<SessionId, Promise<Agent>>()
 +  const ownedSessions = new Map<SessionId, AgentHandle>()
 +  const sessionDeletions = new Set<SessionId>()
++  const remoteResumes = new Set<SessionId>()
    /** Serializes path ownership and explicit title checks with Workspace mutations. */
    let workspaceCreationChain = Promise.resolve()
    const pendingQuestions = new Map<RpcId, PendingQuestion>()
-@@ -1573,6 +1575,7 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
+@@ -1208,6 +1211,16 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
+   // restore that history under the old tool set.
+   const agentFor = createApiRemoteAgentResolver(ctx, {
+     agentOptions,
++    resumeAgent: async (options) => {
++      const id = options.resumeSessionId
++      if (sessionDeletions.has(id)) throw new Error(`session "${id}" is being deleted`)
++      remoteResumes.add(id)
++      try {
++        const handle = await ctx.agents.resume(options)
++        ownedSessions.set(id, handle)
++        return handle
++      } finally { remoteResumes.delete(id) }
++    },
+     setup: async ({ meta, events }) =>
+       (await composeAgent(resolveSessionPreset({ header: meta, events }))).setup,
+   })
+@@ -1573,6 +1586,7 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
      checkPersistedIdentity: boolean,
      presetId?: string,
    ): Promise<Agent> {
@@ -28,7 +81,7 @@ index 5a00d8fa06..5e21cbb40c 100644
      let creation = sessionCreations.get(sessionId)
      if (creation === undefined) {
        creation = (async () => {
-@@ -1606,11 +1609,13 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
+@@ -1606,11 +1620,13 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
            // session's history was produced under that composition, and
            // rebuilding it differently would replay tool calls the model can no
            // longer make.
@@ -44,7 +97,7 @@ index 5a00d8fa06..5e21cbb40c 100644
          }
  
          try {
-@@ -1619,7 +1624,7 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
+@@ -1619,7 +1635,7 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
            throw new Error(`failed to ensure project directory "${cwd}": ${String(error)}`, { cause: error })
          }
          const composition = await composeAgent(presetId)
@@ -53,7 +106,7 @@ index 5a00d8fa06..5e21cbb40c 100644
            sessionId,
            agentOptions: agentOptions(),
            meta: {
-@@ -1627,7 +1632,9 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
+@@ -1627,7 +1643,9 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
              ...composition.agentPreset === undefined ? {} : { agentPreset: composition.agentPreset },
            },
            setup: composition.setup,
@@ -64,7 +117,24 @@ index 5a00d8fa06..5e21cbb40c 100644
        })().catch((error: unknown) => {
          // Another Host entry path may have published the same identity while
          // this operation crossed an asynchronous persistence/filesystem step.
-@@ -2838,33 +2845,34 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
+@@ -2331,7 +2349,7 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
+         // plane, composing nothing would leave the child with no tools at all.
+         const forkComposition = await composeAgent(resolveSessionPreset(source))
+         try {
+-          await ctx.agents.create({
++          const handle = await ctx.agents.create({
+             sessionId: childId,
+             seed: events.slice(0, cut),
+             meta: {
+@@ -2345,6 +2363,7 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
+             agentOptions: agentOptions(),
+             setup: forkComposition.setup,
+           })
++          ownedSessions.set(childId, handle)
+         } catch (error: unknown) {
+           return err(request, {
+             code: 'internal',
+@@ -2838,33 +2857,35 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
  
        async deleteSession(request) {
          const { sessionId } = request.payload
@@ -77,7 +147,7 @@ index 5a00d8fa06..5e21cbb40c 100644
 -        if (ctx.agents.get(sessionId)?.status === 'running') {
 +        const handle = ownedSessions.get(sessionId)
 +        const live = ctx.agents.get(sessionId)
-+        if (sessionCreations.has(sessionId) || sessionDeletions.has(sessionId)
++        if (sessionCreations.has(sessionId) || remoteResumes.has(sessionId) || sessionDeletions.has(sessionId)
 +          || live?.status === 'running'
 +          || (ctx.sessions.get(sessionId) !== undefined && handle?.agent !== live)
 +          || (ctx.sessions.get(sessionId) !== undefined && handle === undefined)) {
@@ -112,6 +182,7 @@ index 5a00d8fa06..5e21cbb40c 100644
 +          }
 +          const persistence = ctx.get('sessionPersistence')
 +          if (persistence !== undefined) await persistence.delete(sessionId)
++          await ctx.get('sessionProjectionCache')?.remove(sessionId)
 +          await ctx.workspaceRegistry.detachSession(sessionId)
 +          broadcastHost({ type: 'host/session-removed', sessionId })
 +          return ok(request, { archivedSessionIds: [...ctx.workspaceRegistry.archivedSessionIds] })
@@ -188,3 +259,49 @@ index d3ad01ca10..e2b29a3ad7 100644
     * id that is neither live nor stored must resolve as a no-op.
     * @param id - the session to delete.
     * @param signal - optional cancellation for backend deletion work.
+diff --git a/packages/session/session-projection-cache/src/index.ts b/packages/session/session-projection-cache/src/index.ts
+index f7bdb62a3a..3b9487ab75 100644
+--- a/packages/session/session-projection-cache/src/index.ts
++++ b/packages/session/session-projection-cache/src/index.ts
+@@ -75,6 +75,7 @@ export class SessionProjectionCache extends Service {
+ 
+   private table?: KvTable<SessionId, CheckpointRecord>
+   private readonly dirty = new Map<Session, DirtyState>()
++  private readonly deleted = new Set<SessionId>()
+ 
+   constructor(ctx: Context, public config: Config) {
+     super(ctx, 'sessionProjectionCache')
+@@ -88,6 +89,17 @@ export class SessionProjectionCache extends Service {
+     this.installWritePath()
+   }
+ 
++  /**
++   * Remove a deleted session's checkpoint and suppress late checkpoint writes.
++   * @param id - detached session whose durable log has been deleted.
++   * @returns resolution after the cache row is durably removed.
++   */
++  async remove(id: SessionId): Promise<void> {
++    if (this.ctx.sessions.get(id) !== undefined) throw new Error('cannot remove a live session checkpoint')
++    this.deleted.add(id)
++    await this.requireTable().delete(id)
++  }
++
+   /**
+    * The stored record for one session, accepted only when its bound log
+    * identity matches `expected`. A session id names a slot, not a lifecycle:
+@@ -198,6 +210,7 @@ export class SessionProjectionCache extends Service {
+   // --- write-behind (throttle + mandatory points) ---
+ 
+   private installWritePath(): void {
++    this.ctx.on('session/created', (session: Session) => { this.deleted.delete(session.id) })
+     // Every committed event advances the dirty counter; turn/end is a
+     // mandatory point (the durable value most reads want is the turn-final
+     // one), count/interval throttle the in-turn stream.
+@@ -263,6 +276,7 @@ export class SessionProjectionCache extends Service {
+ 
+   /** Replace one session's stored record with its log identity and a detached snapshot of `rows`. */
+   private async put(id: SessionId, identity: CheckpointIdentity, rows: ProjectionCheckpoint): Promise<void> {
++    if (this.deleted.has(id)) return
+     const detached = snapshotJsonValue(rows)
+     if (detached === undefined) {
+       throw new TypeError('projection checkpoint is not losslessly JSON-serializable (a unit state violates the plain-JSON contract)')
