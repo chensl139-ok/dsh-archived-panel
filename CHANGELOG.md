@@ -1,3 +1,10 @@
+# 0.4.0 — 2026-09-05
+
+- Fix deletion lifecycle in the new `deleteSession-complete.diff` Host patch: dispose owned idle agents, drain retired writes outside the queue, then remove durable records and indexes.
+- Preserve failed deletions for retry, including archive IDs whose session metadata is missing.
+- Add search, workspace filtering, recent-first ordering, operation locking, accessible centered confirmation and error feedback.
+- Generate the local plugin browser artifact from this source with `pnpm export:local`.
+
 # Changelog
 
 ## 0.3.0

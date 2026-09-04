@@ -1,3 +1,28 @@
+# 0.4.0：删除不彻底修复 / Complete deletion fix
+
+新增 `deleteSession-complete.diff` 和 `deleteSession-complete.tests.diff` 是**增量修复**，基于 `chensl139-ok/deepseek-harness` 提交 `8eb6aa069af605a3d6277dc301190ddeea3bb972`（已具备删除 RPC）。已对该提交导出的源码验证 `git apply --check`。它们不是针对干净的官方 rc.7；其他版本请迁移对应函数并运行测试。
+
+The new patches are incremental fixes for `chensl139-ok/deepseek-harness` commit `8eb6aa069af605a3d6277dc301190ddeea3bb972`, which already contains the deletion RPC. Both patches pass `git apply --check` on that exact base. They do not target a clean official rc.7 tree; port and test on other versions.
+
+```sh
+# In the matching Harness checkout:
+git apply --check /path/to/dsh-archived-panel/patches/deleteSession-complete.diff /path/to/dsh-archived-panel/patches/deleteSession-complete.tests.diff
+git apply /path/to/dsh-archived-panel/patches/deleteSession-complete.diff /path/to/dsh-archived-panel/patches/deleteSession-complete.tests.diff
+pnpm run build:lib:host
+pnpm exec vitest run packages/host/apiproxy/tests/api-proxy-workspace.spec.ts packages/session/session-persistence/tests/persistence.spec.ts packages/session/session-persistence-jsonl/tests/jsonl.spec.ts packages/session/session-persistence-sqlite/tests/sqlite.spec.ts
+DSH_SNAPSHOT=replay pnpm exec vitest run --config vitest.web.config.ts apps/web/tests/archived-delete.snapshot.ts
+```
+
+**重启 DSH Host** 后刷新浏览器。只更新归档面板不能修复后端。正在运行或由其他组件持有的会话仍拒绝删除。删除不操作项目工作目录和用户导出的文件。
+
+**Restart the DSH Host**, then reload the browser. Updating only the panel cannot fix the backend. Running sessions and sessions owned by another component still reject deletion. Project working directories and user-exported files are not deleted.
+
+旧补丁说明保留如下。注意：旧 `deleteSession.diff` 本身包含取消归档改动，不能把它与 `unarchiveSession.diff` 当成两份独立增量顺序应用。已有任一旧改动的源码，应先检查差异并迁移；始终以 `git apply --check` 为准。
+
+The legacy patches below are retained for reference. `deleteSession.diff` already includes unarchive changes; do not apply it after `unarchiveSession.diff` as if they were independent increments. Inspect and port existing changes, and always check applicability first.
+
+---
+
 # archived-panel patches — official-source patches / 官方源码补丁
 
 [English](#english) · [中文](#中文)
@@ -55,7 +80,7 @@ Host handler 还会拒绝正在进行的 live 会话，返回新错误码 `sessi
 | Client manager | `packages/client/runtime/src/client/workspaces/manager.ts` | `WorkspaceManager.deleteSession` |
 | Client service | `packages/client/runtime/src/client/workspaces/service.ts` | `WorkspaceRuntime.deleteSession` |
 
-`deleteSession.diff` 是在**已应用 `unarchiveSession` 补丁**的源码树上生成的 `git diff`。在干净的 `0.1.0-rc.7` 上单独应用 `deleteSession.diff` 也能成功（它会同时带上 unarchive 的改动），但推荐先应用 unarchive，再应用 delete。
+`deleteSession.diff` 是在**已应用 `unarchiveSession` 补丁**的源码树上生成的 `git diff`。在干净的 `0.1.0-rc.7` 上单独应用 `deleteSession.diff` 也能成功（它会同时带上 unarchive 的改动），不可在已应用 unarchive 的树上直接重复应用。
 
 ## 应用
 
@@ -136,7 +161,7 @@ The host handler also refuses a live session with a new `session-live` error cod
 | Client manager | `packages/client/runtime/src/client/workspaces/manager.ts` | `WorkspaceManager.deleteSession` |
 | Client service | `packages/client/runtime/src/client/workspaces/service.ts` | `WorkspaceRuntime.deleteSession` |
 
-`deleteSession.diff` is generated as a `git diff` against a source tree that **already has `unarchiveSession` applied**. Applying `deleteSession.diff` alone on a clean `0.1.0-rc.7` also works (it carries the unarchive changes too), but applying unarchive first then delete is the recommended order.
+`deleteSession.diff` is generated as a `git diff` against a source tree that **already has `unarchiveSession` applied**. Applying `deleteSession.diff` alone on a clean `0.1.0-rc.7` also works (it carries the unarchive changes too), so do not apply it on top of unarchive without porting overlapping changes.
 
 ## Applying
 

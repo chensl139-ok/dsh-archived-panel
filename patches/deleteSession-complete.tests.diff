@@ -1,0 +1,240 @@
+diff --git a/packages/host/apiproxy/tests/api-proxy-workspace.spec.ts b/packages/host/apiproxy/tests/api-proxy-workspace.spec.ts
+index efbb16d682..642640506b 100644
+--- a/packages/host/apiproxy/tests/api-proxy-workspace.spec.ts
++++ b/packages/host/apiproxy/tests/api-proxy-workspace.spec.ts
+@@ -75,22 +75,22 @@ async function harness(
+   const storageDomain = new DomainFacility(ctx, { backend: 'memory', routes: {} })
+   ctx.storage.mount('domain', storageDomain)
+   ctx.provide('storageDomain', storageDomain)
+-  ctx.provide('sessionPersistence', { list: () => Promise.resolve([]) } as never)
++  ctx.provide('sessionPersistence', { list: () => Promise.resolve([]), delete: vi.fn(async () => {}) } as never)
+   await ctx.plugin(WorkspaceRegistry)
+ 
+   const factory: AgentFactory = {
+     async createAgent(_ownerCtx, options) {
+-      const session = ctx.sessions.create(
+-        options.sessionId,
+-        options.meta === undefined ? {} : { meta: options.meta },
+-      )
++      let session!: Session
++      const owner = await ctx.plugin(Object.assign((inner: Context) => {
++        session = inner.sessions.create(options.sessionId, options.meta === undefined ? {} : { meta: options.meta })
++      }, { inject: ['sessions'] }))
+       const agent = stubAgent(session)
+       const unregister = ctx.agents.register(agent)
+       return {
+         agent,
+-        dispose: () => {
++        dispose: async () => {
+           unregister()
+-          return Promise.resolve()
++          await owner.dispose()
+         },
+       }
+     },
+@@ -569,3 +569,51 @@ describe('Host Workspace increments', () => {
+     abort.abort()
+   })
+ })
++
++
++describe('permanent session deletion', () => {
++  it('disposes an owned idle session before deleting its log and all indexes', async () => {
++    const { api, ctx, root } = await harness()
++    try {
++      const workspace = expectOk(await api.workspace.create(request({ path: stageDir(root, 'delete-home') }))).workspace
++      const sessionId = SessionId('delete-idle')
++      expectOk(await api.sessions.create(request({ workspaceId: workspace.workspaceId, sessionId })))
++      expectOk(await api.workspace.archiveSession(request({ sessionId })))
++      vi.mocked(ctx.sessionPersistence.delete).mockImplementation(async () => {
++        expect(ctx.sessions.get(sessionId)).toBeUndefined()
++        expect(ctx.agents.get(sessionId)).toBeUndefined()
++      })
++      expectOk(await api.workspace.deleteSession(request({ sessionId })))
++      expect(ctx.sessionPersistence.delete).toHaveBeenCalledWith(sessionId)
++      expect(expectOk(await api.workspace.list(request({}))).archivedSessionIds).toEqual([])
++      expect(expectOk(await api.workspace.list(request({}))).items[0]?.sessionIds).toEqual([])
++      expect(expectOk(await api.sessions.list(request({}))).items).toEqual([])
++    } finally { await ctx.fiber.dispose() }
++  })
++
++  it('keeps archive indexes on storage failure so deletion can be retried', async () => {
++    const { api, ctx, root } = await harness()
++    try {
++      const workspace = expectOk(await api.workspace.create(request({ path: stageDir(root, 'retry-home') }))).workspace
++      const sessionId = SessionId('delete-retry')
++      expectOk(await api.sessions.create(request({ workspaceId: workspace.workspaceId, sessionId })))
++      expectOk(await api.workspace.archiveSession(request({ sessionId })))
++      vi.mocked(ctx.sessionPersistence.delete).mockRejectedValueOnce(new Error('disk failure'))
++      await expect(api.workspace.deleteSession(request({ sessionId }))).rejects.toThrow('disk failure')
++      expect(ctx.workspaceRegistry.archivedSessionIds.includes(sessionId)).toBe(true)
++      expectOk(await api.workspace.deleteSession(request({ sessionId })))
++      expect(ctx.workspaceRegistry.archivedSessionIds.includes(sessionId)).toBe(false)
++    } finally { await ctx.fiber.dispose() }
++  })
++
++  it('refuses a session owned by another component', async () => {
++    const { api, ctx } = await harness()
++    try {
++      const session = ctx.sessions.create(SessionId('foreign-owner'))
++      ctx.agents.register(stubAgent(session))
++      expect((await api.workspace.deleteSession(request({ sessionId: session.id }))).result)
++        .toMatchObject({ ok: false, error: { code: 'session-live' } })
++      expect(ctx.sessionPersistence.delete).not.toHaveBeenCalled()
++    } finally { await ctx.fiber.dispose() }
++  })
++})
+diff --git a/packages/session/session-persistence/tests/coordinator-contract.ts b/packages/session/session-persistence/tests/coordinator-contract.ts
+index 8633faa886..5d5ea7967b 100644
+--- a/packages/session/session-persistence/tests/coordinator-contract.ts
++++ b/packages/session/session-persistence/tests/coordinator-contract.ts
+@@ -223,6 +223,35 @@ export function runCoordinatorContract(name: string, makeFixture: () => Promise<
+       return { ctx, fiber }
+     }
+ 
++    it('deletes after retirement and stays absent after backend reload', async () => {
++      const fix = await makeFixture()
++      const { ctx, fiber } = await freshCtx(fix)
++      const id = SessionId('delete-retiring')
++      let session!: Session
++      const owner = await ctx.plugin(Object.assign((inner: Context) => {
++        session = inner.sessions.create(id, { meta: { cwd: WORK } })
++      }, { inject: ['sessions'] }))
++      try {
++        send(session, oneTurnLog())
++        // Do not pre-flush: deletion must wait for the pending final batch.
++        await expect(ctx.sessionPersistence.delete(id)).rejects.toThrow('while it is live')
++        await owner.dispose()
++        await ctx.sessionPersistence.delete(id)
++        expect(await ctx.sessionPersistence.list()).toEqual([])
++        await expect(ctx.sessionPersistence.inspect(id)).rejects.toThrow('not found')
++        await fiber.dispose()
++        const restarted = await freshCtx(fix)
++        try {
++          expect(await restarted.ctx.sessionPersistence.list()).toEqual([])
++          await expect(restarted.ctx.sessionPersistence.load(id)).rejects.toThrow('not found')
++          await restarted.ctx.sessionPersistence.delete(id)
++        } finally { await restarted.ctx.fiber.dispose() }
++      } finally {
++        await ctx.fiber.dispose()
++        await fix.cleanup()
++      }
++    })
++
+     // --- write path: live session → flush → reload ---
+ 
+     it('persists a live session driven through the store, surviving reload', async () => {
+diff --git a/apps/web/tests/archived-delete.snapshot.ts b/apps/web/tests/archived-delete.snapshot.ts
+new file mode 100644
+index 0000000000..ef70f173e0
+--- /dev/null
++++ b/apps/web/tests/archived-delete.snapshot.ts
+@@ -0,0 +1,40 @@
++/** Keyless real Web composition: delete a host-owned idle session with queued writes. */
++import { expect, it } from 'vitest'
++import { SessionId } from '@deepseek-ai/dsh-session'
++import { RpcId } from '@deepseek-ai/dsh-host-apiproxy/api/rpc'
++import { launchWebScaffold } from './scaffold.ts'
++
++it('permanently removes an archived idle session from the running host and durable store', async () => {
++  const scaffold = await launchWebScaffold()
++  const { ctx } = scaffold
++  const sessionId = SessionId('archive-delete-regression')
++  let sequence = 0
++  const request = <P>(payload: P) => ({ rpcId: RpcId(`delete-${++sequence}`), payload })
++  try {
++    const created = await ctx.apiProxy.sessions.create(request({ sessionId, cwd: scaffold.workspaceCwd }))
++    expect(created.result.ok).toBe(true)
++    const session = ctx.sessions.get(sessionId)!
++    // A completed turn remains queued in the real persistence write-behind.
++    session.append('turn/start', { turn: 1 })
++    session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
++    expect((await ctx.apiProxy.workspace.archiveSession(request({ sessionId }))).result.ok).toBe(true)
++    expect((await ctx.apiProxy.workspace.deleteSession(request({ sessionId }))).result.ok).toBe(true)
++    const view = {
++      liveSession: ctx.sessions.get(sessionId) !== undefined,
++      liveAgent: ctx.agents.get(sessionId) !== undefined,
++      archived: ctx.workspaceRegistry.archivedSessionIds.includes(sessionId),
++      persisted: (await ctx.sessionPersistence.list()).some(row => row.id === sessionId),
++      attached: ctx.workspaceRegistry.list().some(item => item.sessionIds.includes(sessionId)),
++    }
++    expect(view).toMatchInlineSnapshot(`
++      {
++        "archived": false,
++        "attached": false,
++        "liveAgent": false,
++        "liveSession": false,
++        "persisted": false,
++      }
++    `)
++    await expect(ctx.sessionPersistence.inspect(sessionId)).rejects.toThrow('not found')
++  } finally { await scaffold.close() }
++})
+diff --git a/.agents/notes/implemented/bug-fix/2026-09-05-complete-session-deletion.i18n.yaml b/.agents/notes/implemented/bug-fix/2026-09-05-complete-session-deletion.i18n.yaml
+new file mode 100644
+index 0000000000..299f252afa
+--- /dev/null
++++ b/.agents/notes/implemented/bug-fix/2026-09-05-complete-session-deletion.i18n.yaml
+@@ -0,0 +1,6 @@
++# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
++# side as of the last confirmed-consistent state. Both languages carry equal authority;
++# after editing either side, bring the other along and re-record with:
++#   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-09-05-complete-session-deletion.md
++2026-09-05-complete-session-deletion.md: 3b829cc73acdb45584c77db6e3dfd3b641495952
++2026-09-05-complete-session-deletion.zh.md: b2831235ae86207460e51e359a9a74574e86f21b
+diff --git a/.agents/notes/implemented/bug-fix/2026-09-05-complete-session-deletion.zh.md b/.agents/notes/implemented/bug-fix/2026-09-05-complete-session-deletion.zh.md
+new file mode 100644
+index 0000000000..b2831235ae
+--- /dev/null
++++ b/.agents/notes/implemented/bug-fix/2026-09-05-complete-session-deletion.zh.md
+@@ -0,0 +1,22 @@
++# Agent Note: 完整删除归档会话
++
++Status: implemented
++
++[English](2026-09-05-complete-session-deletion.md) | 中文
++## Problem
++
++删除 RPC 移除了持久化记录，却保留闲置的 Agent 和 Session 对象，后续写入可能重新创建日志。持久化删除还在持有串行队列时等待通过同一队列提交的缓冲写入，导致死锁。
++
++## Decision
++
++API 网关保留创建或恢复会话返回的 AgentHandle。删除拒绝运行中、生命周期转换中或由其他组件持有的会话。它先释放自己持有的闲置实例，再删除持久化记录，最后清理工作区和归档索引。删除期间拒绝创建同一会话。
++
++持久化层拒绝仍存活的会话，并在进入按 ID 串行的删除队列前等待退役写入完成。后端失败时保留跟踪状态供重试。归档界面保留元数据已消失的 ID，使部分失败后仍能重试。
++
++## Alternatives considered
++
++仅删除磁盘文件会遗留写入者。释放任意已注册 Agent 会违反所有权。删除队列内部的刷新无法完成，因为刷新也通过该队列追加记录。
++
++## Consequences
++
++Host 必须重启才能建立新的所有权记录。运行中的会话需要完成或停止后再删除。网关只释放自己持有的 Agent。定向测试覆盖存储失败重试和外部所有权；JSONL、SQLite 契约测试验证删除后重新打开存储仍无记录。无密钥的真实 Web 组合快照验证运行时和持久化的五个视图均无残留。
+diff --git a/.agents/notes/implemented/bug-fix/2026-09-05-complete-session-deletion.md b/.agents/notes/implemented/bug-fix/2026-09-05-complete-session-deletion.md
+new file mode 100644
+index 0000000000..3b829cc73a
+--- /dev/null
++++ b/.agents/notes/implemented/bug-fix/2026-09-05-complete-session-deletion.md
+@@ -0,0 +1,22 @@
++# Agent Note: Complete archived session deletion
++
++Status: implemented
++
++English | [中文](2026-09-05-complete-session-deletion.zh.md)
++## Problem
++
++The delete RPC removed durable records while retaining idle Agent and Session objects. Subsequent writes could recreate the log. Persistence deletion also flushed write-behind while holding the same serialization queue used by the flush, creating a deadlock.
++
++## Decision
++
++The API gateway retains the AgentHandle it receives when creating or resuming sessions. Deletion refuses running, transitioning, or externally owned sessions. It disposes its owned idle handle, then asks persistence to delete, then removes workspace and archive indexes. Creation is rejected while deletion is in progress.
++
++Persistence rejects live sessions and awaits retirement before entering its per-id deletion queue. Backend failure preserves tracked state for retry. The archive UI retains IDs whose metadata disappeared, so partial failures remain actionable.
++
++## Alternatives considered
++
++Deleting only the on-disk artifact leaves active writers. Disposing arbitrary registered agents violates ownership. Flushing inside the deletion queue cannot complete because flush appends through that queue.
++
++## Consequences
++
++Hosts must restart to acquire the new ownership bookkeeping. Running sessions must finish or stop before deletion. The gateway only disposes agents it owns. Focused tests cover storage failure retry and foreign ownership; JSONL and SQLite contract tests reopen storage after deletion. A keyless real Web composition snapshot asserts absence from all five runtime and persistence views.

@@ -1,255 +1,163 @@
-/**
- * Archived-sessions panel, browser half: an 已归档 trigger anchored to the
- * left rail via the frame-wide shell.overlay slot. Clicking it opens a
- * dropdown listing every archived session (title / workspace / relative
- * time); clicking a row opens that session; trailing buttons unarchive or
- * permanently delete it.
- *
- * Reads ride the shell.overlay standard hooks (`useSessions`,
- * `useWorkspaces`); opening uses `ctx.sessions.open`. All styling is inline
- * so the bundle carries no CSS-module dependency.
- *
- * The unarchive action calls `ctx.workspaces.unarchiveSession(id)` and the
- * delete action calls `ctx.workspaces.deleteSession(id)` when those service
- * methods exist. On a stock DSH host the methods are absent (they come from
- * the optional official-source patches in ./patches), so the buttons are
- * hidden rather than throwing — the panel degrades to view + open. Delete is
- * destructive, so it prompts for confirmation first.
- */
-
+/** Searchable archived-session browser shared by both plugin distributions. */
 import * as React from 'react'
-import type { ClientContext, SessionId, SessionListState } from '@deepseek-ai/dsh-client-runtime/client'
-// Type-only: pulls the ui-layout SlotMap merge (the shell.overlay seat).
+import type { ClientContext, SessionId, SessionListState, WorkspaceListState } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
-// Type-only: pulls the workspace list state shape.
-import type { WorkspaceListState } from '@deepseek-ai/dsh-client-runtime/client'
 import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
 
-/** Required services: session-open routing and workspace archive-set mutation. */
 export const inject = ['sessions', 'workspaces']
-
-function relTime(ts: number): string {
-  const d = Date.now() - ts
-  if (d < 60000) return '刚刚'
-  const m = Math.floor(d / 60000)
-  if (m < 60) return `${m} 分钟前`
-  const h = Math.floor(m / 60)
-  if (h < 24) return `${h} 小时前`
-  return `${Math.floor(h / 24)} 天前`
-}
-
-function workspaceTitleOf(workspaces: WorkspaceListState | undefined, sessionId: string): string {
-  const items = workspaces?.items ?? []
-  for (const w of items) {
-    if (w.sessionIds.includes(sessionId as SessionId)) return w.title ?? '未分组'
-  }
-  return '未分组'
-}
 
 interface ArchivedPanelProps {
   useSessions: SnapshotSelectorHook<SessionListState>
   useWorkspaces: SnapshotSelectorHook<WorkspaceListState>
+  open: (id: string) => void
+  unarchive?: (id: string) => Promise<void>
+  remove?: (id: string) => Promise<void>
 }
 
-interface ArchivedSessionRow {
-  id: string
-  title: string
-  updatedAt: number
+const h = React.createElement
+const button: React.CSSProperties = {
+  padding: '7px 10px', border: '1px solid var(--dsw-alias-border-l1, #ddd)',
+  borderRadius: 8, background: 'var(--dsw-alias-bg-layer-1, white)',
+  color: 'var(--dsw-alias-label-primary, #222)', font: 'inherit', cursor: 'pointer',
+}
+const secondary: React.CSSProperties = { color: 'var(--dsw-alias-label-secondary, #666)', fontSize: 12 }
+const modal: React.CSSProperties = {
+  width: 'min(680px, calc(100vw - 32px))', maxHeight: '80vh', boxSizing: 'border-box',
+  padding: 20, border: '1px solid var(--dsw-alias-border-l1, #ddd)', borderRadius: 14,
+  background: 'var(--dsw-alias-bg-overlay, white)', color: 'var(--dsw-alias-label-primary, #222)',
+  boxShadow: '0 20px 60px #0004', font: '14px/1.5 system-ui',
 }
 
-/** Render one archived-session row; clicking the body opens it, the trailing buttons unarchive / delete it. */
-function ArchivedRow(props: {
-  id: string
-  title: string
-  meta: string
-  canUnarchive: boolean
-  canDelete: boolean
-  onOpen: (id: string) => void
-  onUnarchive: (id: string) => void
-  onDelete: (id: string) => void
-}) {
-  const unarchiveButton = props.canUnarchive
-    ? React.createElement('button', {
-      type: 'button',
-      onClick: () => props.onUnarchive(props.id),
-      title: '取消归档',
-      'aria-label': '取消归档',
-      style: {
-        flex: '0 0 auto', padding: '4px 7px', border: '0', borderRadius: '6px', cursor: 'pointer',
-        background: 'var(--dsw-alias-bg-layer-2)', color: 'var(--dsw-alias-label-secondary)',
-        fontFamily: 'inherit', fontSize: '11px', whiteSpace: 'nowrap',
-      },
-    }, '取消归档')
-    : null
-  const deleteButton = props.canDelete
-    ? React.createElement('button', {
-      type: 'button',
-      onClick: () => props.onDelete(props.id),
-      title: '删除',
-      'aria-label': '删除',
-      style: {
-        flex: '0 0 auto', padding: '4px 7px', border: '0', borderRadius: '6px', cursor: 'pointer',
-        background: 'transparent', color: 'var(--dsw-alias-color-danger, #d0334b)',
-        fontFamily: 'inherit', fontSize: '13px', lineHeight: '1', whiteSpace: 'nowrap',
-      },
-    }, '🗑')
-    : null
-  return React.createElement('div', {
-    key: props.id,
-    style: { display: 'flex', alignItems: 'center', gap: '6px', width: '100%' },
-  },
-    React.createElement('button', {
-      type: 'button',
-      onClick: () => props.onOpen(props.id),
-      title: props.title,
-      style: {
-        display: 'flex', flexDirection: 'column', gap: '2px', flex: '1 1 auto', minWidth: '0',
-        padding: '8px 10px', border: '0', borderRadius: '8px', background: 'transparent',
-        cursor: 'pointer', textAlign: 'left',
-      },
-    },
-      React.createElement('span', { style: { color: 'var(--dsw-alias-label-primary)', fontSize: '13px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, props.title),
-      React.createElement('span', { style: { color: 'var(--dsw-alias-label-secondary)', fontSize: '11px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, props.meta),
-    ),
-    unarchiveButton,
-    deleteButton,
-  )
+function relativeTime(timestamp: number): string {
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return '时间未知'
+  const minutes = Math.floor(Math.max(0, Date.now() - timestamp) / 60000)
+  if (minutes < 1) return '刚刚'
+  if (minutes < 60) return `${minutes} 分钟前`
+  if (minutes < 1440) return `${Math.floor(minutes / 60)} 小时前`
+  return `${Math.floor(minutes / 1440)} 天前`
 }
 
-/** The left-rail trigger plus its dropdown, hosted on the overlay slot. */
-function ArchivedPanel(props: ArchivedPanelProps & { open: (id: string) => void; onUnarchive: (id: string) => void; canUnarchive: boolean; onDelete: (id: string) => void; canDelete: boolean }) {
-  const [openList, setOpenList] = React.useState(false)
-  // Panel width tracks the rendered sidebar column (default 280px, min 264,
-  // max 420). The sidebar slot anchor is a `display:contents` wrapper (width
-  // 0), so measure its PARENT — the layout column that carries the grid width
-  // — and keep it in sync with user drags via a ResizeObserver.
-  const [sidebarWidth, setSidebarWidth] = React.useState(280)
+/** Native modal supplies focus trapping, Escape handling and focus restoration. */
+function Dialog(props: { title: string; close: () => void; children: React.ReactNode }) {
+  const ref = React.useRef<HTMLDialogElement>(null)
+  const titleId = React.useId()
   React.useEffect(() => {
-    const anchor = document.querySelector('[data-slot="sidebar"]')
-    const column = anchor?.parentElement ?? null
-    if (column === null) return
-    const update = () => {
-      const w = column.getBoundingClientRect().width
-      if (w > 0) setSidebarWidth(w)
-    }
-    update()
-    const observer = (typeof ResizeObserver !== 'undefined') ? new ResizeObserver(update) : undefined
-    observer?.observe(column)
-    return () => { observer?.disconnect() }
+    const dialog = ref.current!
+    dialog.showModal()
+    return () => dialog.close()
   }, [])
-
-  let rows: ArchivedSessionRow[] = []
-  let workspaces: WorkspaceListState | undefined
-  try {
-    workspaces = props.useWorkspaces((s: WorkspaceListState) => s)
-    const list = props.useSessions((s: SessionListState) => s)
-    const archivedIds = workspaces.archivedSessionIds ?? []
-    const byId = list.byId ?? {}
-    rows = archivedIds
-      .map(id => byId[id])
-      .filter((s): s is NonNullable<typeof s> => s !== undefined)
-      .map(s => ({ id: s.id, title: s.displayTitle ?? String(s.id), updatedAt: s.updatedAt ?? 0 }))
-  } catch (e) {
-    console.error('archived data:', e)
-  }
-
-  const openSession = (id: string) => { props.open(id); setOpenList(false) }
-
-  const trigger = React.createElement('button', {
-    type: 'button',
-    'data-archived-mounted': '1',
-    onClick: () => setOpenList((v: boolean) => !v),
-    'aria-expanded': openList,
-    title: `已归档会话 ${String(rows.length)}`,
-    style: {
-      position: 'fixed', left: '10px', bottom: '112px', zIndex: 1300,
-      height: '38px', padding: '0 12px', boxSizing: 'border-box',
-      display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
-      border: '1px solid var(--dsw-alias-border-l1)', cursor: 'pointer',
-      background: 'var(--dsw-alias-bg-layer-1)', color: 'var(--dsw-alias-label-secondary)',
-      fontFamily: 'inherit', fontSize: '12px', borderRadius: '8px', whiteSpace: 'nowrap',
+  return h('dialog', {
+    ref, 'aria-labelledby': titleId, style: modal,
+    onCancel: (event: React.SyntheticEvent) => { event.preventDefault(); props.close() },
+    onClick: (event: React.MouseEvent<HTMLDialogElement>) => {
+      if (event.target !== event.currentTarget) return
+      const bounds = event.currentTarget.getBoundingClientRect()
+      if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) props.close()
     },
   },
-    React.createElement('span', { style: { fontSize: '14px', lineHeight: '1' } }, '🗂'),
-    React.createElement('span', { style: { lineHeight: '1' } }, '已归档'),
-    React.createElement('span', { style: { fontSize: '11px', opacity: '.7' } }, String(rows.length)),
-  )
-
-  if (!openList) return React.createElement(React.Fragment, null, trigger)
-
-  const body: import('react').ReactNode[] = []
-  if (rows.length === 0) {
-    body.push(React.createElement('div', { style: { padding: '18px 12px', textAlign: 'center', color: 'var(--dsw-alias-label-secondary)', fontSize: '13px' } }, '暂无归档会话'))
-  } else {
-    for (const s of rows) {
-      const meta = `${workspaceTitleOf(workspaces, s.id)} · ${relTime(s.updatedAt)}`
-      body.push(React.createElement(ArchivedRow, { id: s.id, title: s.title, meta, canUnarchive: props.canUnarchive, canDelete: props.canDelete, onOpen: openSession, onUnarchive: props.onUnarchive, onDelete: props.onDelete }))
-    }
-  }
-
-  return React.createElement(React.Fragment, null, trigger,
-    React.createElement('div', {
-      onClick: () => setOpenList(false),
-      style: { position: 'fixed', inset: '0', zIndex: 1250, background: 'rgba(0,0,0,.35)' },
-    },
-      React.createElement('div', {
-        onClick: (e: { stopPropagation: () => void }) => { e.stopPropagation() },
-        style: {
-          position: 'fixed', left: '10px', bottom: '158px',
-          width: `${Math.min(Math.max(sidebarWidth - 20, 240), 420)}px`, maxWidth: 'calc(100vw - 24px)',
-          maxHeight: 'min(64vh, 560px)', overflow: 'auto',
-          background: 'var(--dsw-alias-bg-overlay)', border: '1px solid var(--dsw-alias-border-l1)',
-          borderRadius: '12px', boxShadow: '0 10px 34px rgba(0,0,0,.22)', zIndex: 1310,
-        },
-      },
-        React.createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 14px', borderBottom: '1px solid var(--dsw-alias-border-l1)', color: 'var(--dsw-alias-label-primary)', fontWeight: '600', fontSize: '14px' } },
-          React.createElement('span', null, '已归档会话'),
-          React.createElement('button', { type: 'button', onClick: () => setOpenList(false), 'aria-label': '关闭', style: { border: '0', background: 'transparent', color: 'var(--dsw-alias-label-secondary)', fontSize: '18px', lineHeight: '1', cursor: 'pointer', padding: '0 5px', borderRadius: '6px' } }, '×'),
-        ),
-        React.createElement('div', { style: { padding: '6px' } }, body),
-      ),
-    ),
-  )
+  h('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, marginBottom: 16 } },
+    h('h2', { id: titleId, style: { margin: 0, fontSize: 18 } }, props.title),
+    h('button', { type: 'button', style: button, onClick: props.close, 'aria-label': `关闭${props.title}` }, '×')),
+  props.children)
 }
 
-/**
- * Client plugin body: register the archived panel against the frame-wide
- * overlay once its declarer is up.
- * @param ctx - client root context.
- */
+/** Archived IDs remain visible even while their session metadata is unavailable. */
+export function ArchivedPanel(props: ArchivedPanelProps) {
+  const [visible, setVisible] = React.useState(false)
+  const [query, setQuery] = React.useState('')
+  const [workspace, setWorkspace] = React.useState('')
+  const [oldest, setOldest] = React.useState(false)
+  const [error, setError] = React.useState('')
+  const [pending, setPending] = React.useState<string | null>(null)
+  const pendingRef = React.useRef(false)
+  const [confirmation, setConfirmation] = React.useState<{ id: string; title: string } | null>(null)
+  const workspaces = props.useWorkspaces(s => s)
+  const sessions = props.useSessions(s => s)
+  const workspaceBySession = new Map<string, { id: string; title: string }>()
+  for (const item of workspaces.items) {
+    for (const id of item.sessionIds) workspaceBySession.set(id, { id: item.workspaceId, title: item.title || '未分组' })
+  }
+  const rows = [...new Set(workspaces.archivedSessionIds)].map(id => {
+    const session = sessions.byId[id]
+    return { id, title: session?.displayTitle || String(id), updatedAt: session?.updatedAt ?? 0,
+      workspace: workspaceBySession.get(id) }
+  })
+  const needle = query.trim().toLocaleLowerCase()
+  const filtered = rows.filter(row => (!workspace || row.workspace?.id === workspace)
+    && `${row.title}\n${row.id}\n${row.workspace?.title ?? '未分组'}`.toLocaleLowerCase().includes(needle))
+    .sort((a, b) => (oldest ? a.updatedAt - b.updatedAt : b.updatedAt - a.updatedAt) || a.id.localeCompare(b.id))
+
+  const run = async (id: string, action: ((id: string) => Promise<void>) | undefined, label: string) => {
+    if (!action || pendingRef.current) return
+    pendingRef.current = true
+    setPending(id)
+    setError('')
+    try { await action(id) }
+    catch (cause) { setError(`${label}失败：${cause instanceof Error ? cause.message : String(cause)}`) }
+    finally { pendingRef.current = false; setPending(null) }
+  }
+  const close = () => { setVisible(false); setConfirmation(null) }
+  return h(React.Fragment, null,
+    h('button', {
+      type: 'button', 'data-archived-mounted': '1', 'aria-haspopup': 'dialog', 'aria-expanded': visible,
+      onClick: () => setVisible(true), title: `已归档会话 ${rows.length}`,
+      style: { ...button, position: 'fixed', left: 10, bottom: 112, zIndex: 1300 },
+    }, `🗂 已归档 ${rows.length}`),
+    visible ? h(Dialog, { title: '已归档会话', close, children: h(React.Fragment, null,
+      h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 } },
+        h('input', { autoFocus: true, type: 'search', 'aria-label': '搜索归档会话', placeholder: '搜索标题、工作区或会话 ID',
+          value: query, onChange: (event: React.ChangeEvent<HTMLInputElement>) => setQuery(event.target.value),
+          style: { ...button, flex: '1 1 220px', minWidth: 0, cursor: 'text' } }),
+        h('select', { 'aria-label': '筛选工作区', value: workspace, style: button,
+          onChange: (event: React.ChangeEvent<HTMLSelectElement>) => setWorkspace(event.target.value) },
+          h('option', { value: '' }, '全部工作区'),
+          ...workspaces.items.map(item => h('option', { key: item.workspaceId, value: item.workspaceId }, item.title || '未分组'))),
+        h('button', { type: 'button', style: button, onClick: () => setOldest(value => !value) }, oldest ? '最早更新优先' : '最近更新优先')),
+      h('p', { style: secondary, role: 'status' }, `显示 ${filtered.length} / ${rows.length} 个归档会话`),
+      error ? h('div', { role: 'alert', style: { color: 'var(--dsw-alias-color-danger, #b42318)', marginBottom: 12 } }, error) : null,
+      filtered.length === 0 ? h('p', { style: { ...secondary, textAlign: 'center', padding: 24 } }, rows.length ? '没有匹配的归档会话' : '暂无归档会话') : null,
+      h('ul', { style: { listStyle: 'none', margin: 0, padding: 0 } }, ...filtered.map(row => h('li', {
+        key: row.id, 'aria-busy': pending === row.id,
+        style: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, padding: '10px 0', borderBottom: '1px solid var(--dsw-alias-border-l1, #eee)' },
+      },
+      h('button', { type: 'button', disabled: pending !== null,
+        style: { ...button, textAlign: 'left', flex: '1 1 220px', minWidth: 0, border: 0 },
+        title: row.title, onClick: () => {
+          try { props.open(row.id); close() }
+          catch (cause) { setError(`打开失败：${cause instanceof Error ? cause.message : String(cause)}`) }
+        } },
+        h('span', { style: { display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, row.title),
+        h('span', { style: secondary }, `${row.workspace?.title ?? '未分组'} · ${relativeTime(row.updatedAt)}`)),
+      props.unarchive ? h('button', { type: 'button', style: button, disabled: pending !== null,
+        'aria-label': `取消归档：${row.title}`, onClick: () => { void run(row.id, props.unarchive, '取消归档') } }, pending === row.id ? '处理中…' : '取消归档') : null,
+      props.remove ? h('button', { type: 'button', style: { ...button, color: 'var(--dsw-alias-color-danger, #b42318)' }, disabled: pending !== null,
+        'aria-label': `删除：${row.title}`, onClick: () => setConfirmation({ id: row.id, title: row.title }) }, '删除') : null))),
+    ) }) : null,
+    visible && confirmation ? h(Dialog, { title: '永久删除会话', close: () => setConfirmation(null), children: h(React.Fragment, null,
+      h('p', { style: { overflowWrap: 'anywhere' } }, `确定删除「${confirmation.title}」？会话记录将永久删除，无法恢复。`),
+      h('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: 8 } },
+        h('button', { type: 'button', autoFocus: true, style: button, onClick: () => setConfirmation(null) }, '取消'),
+        h('button', { type: 'button', style: { ...button, color: '#b42318' }, onClick: () => {
+          const target = confirmation
+          setConfirmation(null)
+          void run(target.id, props.remove, '删除')
+        } }, '永久删除')),
+    ) }) : null)
+}
+
+/** Register with the overlay slot; older hosts expose only browse and open. */
 export function apply(ctx: ClientContext): void {
   ctx.inject(['slots', 'workspaces'], (scope: ClientContext) => {
-    const sessions = scope.sessions
-    const workspaces = scope.workspaces
-    // Feature-detect the patch-provided unarchive / delete capabilities: on a
-    // stock DSH host the methods are absent, so we hide the buttons instead of
-    // throwing — the panel degrades to view + open.
-    const canUnarchive = typeof (workspaces as { unarchiveSession?: unknown }).unarchiveSession === 'function'
-    const canDelete = typeof (workspaces as { deleteSession?: unknown }).deleteSession === 'function'
+    const workspaces = scope.workspaces as typeof scope.workspaces & {
+      unarchiveSession?: (id: SessionId) => Promise<void>
+      deleteSession?: (id: SessionId) => Promise<void>
+    }
     scope.slots.inject('shell.overlay', () => scope.slots.register({
-      name: 'shell.overlay',
-      id: 'dsh-archived',
-      order: 0,
-      label: '已归档',
-    }, (props: ArchivedPanelProps) => {
-      const open = (id: string) => { sessions.open(id as SessionId) }
-      const unarchive = (id: string) => {
-        const target = workspaces as { unarchiveSession?: (id: SessionId) => Promise<void> }
-        if (typeof target.unarchiveSession === 'function') void target.unarchiveSession(id as SessionId)
-      }
-      const del = (id: string) => {
-        // Destructive and irreversible: confirm before the host tears down the
-        // durable session log. A live session is refused host-side with
-        // session-live; surface that (and any other failure) to the user.
-        if (!window.confirm('确定删除该已归档会话?此操作将永久删除会话记录,不可恢复。')) return
-        const target = workspaces as { deleteSession?: (id: SessionId) => Promise<void> }
-        if (typeof target.deleteSession !== 'function') return
-        void target.deleteSession(id as SessionId).catch((e: unknown) => {
-          console.error('archived delete failed:', e)
-          window.alert(`删除失败:${e instanceof Error ? e.message : String(e)}`)
-        })
-      }
-      return React.createElement(ArchivedPanel, { ...props, open, onUnarchive: unarchive, canUnarchive, onDelete: del, canDelete })
-    }))
+      name: 'shell.overlay', id: 'dsh-archived', order: 0, label: '已归档',
+    }, (props: Pick<ArchivedPanelProps, 'useSessions' | 'useWorkspaces'>) => h(ArchivedPanel, {
+      ...props, open: (id: string) => { scope.sessions.open(id as SessionId) },
+      unarchive: typeof workspaces.unarchiveSession === 'function' ? (id: string) => workspaces.unarchiveSession!(id as SessionId) : undefined,
+      remove: typeof workspaces.deleteSession === 'function' ? (id: string) => workspaces.deleteSession!(id as SessionId) : undefined,
+    })))
   })
 }

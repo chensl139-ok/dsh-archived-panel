@@ -1,0 +1,190 @@
+diff --git a/packages/host/apiproxy/src/api-proxy.ts b/packages/host/apiproxy/src/api-proxy.ts
+index 5a00d8fa06..5e21cbb40c 100644
+--- a/packages/host/apiproxy/src/api-proxy.ts
++++ b/packages/host/apiproxy/src/api-proxy.ts
+@@ -10,7 +10,7 @@ import { dirname } from 'node:path'
+ import { z as zod } from 'zod'
+ import type { Context } from '@deepseek-ai/cordis'
+ import { installModelSelection } from '@deepseek-ai/dsh-agent'
+-import type { Agent, ModelSelection, ModelSelectionRef, AgentOptions, AgentStatus } from '@deepseek-ai/dsh-agent'
++import type { Agent, AgentHandle, ModelSelection, ModelSelectionRef, AgentOptions, AgentStatus } from '@deepseek-ai/dsh-agent'
+ import type {} from '@deepseek-ai/dsh-agent-presets/types'
+ import { AttachmentError, admitEncodedImages } from '@deepseek-ai/dsh-attachment'
+ import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
+@@ -1066,6 +1066,8 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
+   const presetSwitches = new Map<SessionId, Promise<unknown>>()
+   /** Client-chosen identity creation/resume, deduplicated across concurrent retries. */
+   const sessionCreations = new Map<SessionId, Promise<Agent>>()
++  const ownedSessions = new Map<SessionId, AgentHandle>()
++  const sessionDeletions = new Set<SessionId>()
+   /** Serializes path ownership and explicit title checks with Workspace mutations. */
+   let workspaceCreationChain = Promise.resolve()
+   const pendingQuestions = new Map<RpcId, PendingQuestion>()
+@@ -1573,6 +1575,7 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
+     checkPersistedIdentity: boolean,
+     presetId?: string,
+   ): Promise<Agent> {
++    if (sessionDeletions.has(sessionId)) throw new Error(`session "${sessionId}" is being deleted`)
+     let creation = sessionCreations.get(sessionId)
+     if (creation === undefined) {
+       creation = (async () => {
+@@ -1606,11 +1609,13 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
+           // session's history was produced under that composition, and
+           // rebuilding it differently would replay tool calls the model can no
+           // longer make.
+-          return (await ctx.agents.resume({
++          const handle = await ctx.agents.resume({
+             resumeSessionId: sessionId,
+             agentOptions: agentOptions(),
+             setup: (await composeAgent(storedPreset)).setup,
+-          })).agent
++          })
++          ownedSessions.set(sessionId, handle)
++          return handle.agent
+         }
+ 
+         try {
+@@ -1619,7 +1624,7 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
+           throw new Error(`failed to ensure project directory "${cwd}": ${String(error)}`, { cause: error })
+         }
+         const composition = await composeAgent(presetId)
+-        return (await ctx.agents.create({
++        const handle = await ctx.agents.create({
+           sessionId,
+           agentOptions: agentOptions(),
+           meta: {
+@@ -1627,7 +1632,9 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
+             ...composition.agentPreset === undefined ? {} : { agentPreset: composition.agentPreset },
+           },
+           setup: composition.setup,
+-        })).agent
++        })
++        ownedSessions.set(sessionId, handle)
++        return handle.agent
+       })().catch((error: unknown) => {
+         // Another Host entry path may have published the same identity while
+         // this operation crossed an asynchronous persistence/filesystem step.
+@@ -2838,33 +2845,34 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
+ 
+       async deleteSession(request) {
+         const { sessionId } = request.payload
+-        // Refuse to tear down a session's durable log while a turn is in
+-        // flight: the running agent's next append would corrupt. Only a session
+-        // whose Agent is actively running is refused — a live Session object
+-        // whose agent is idle (a long-running process commonly leaks such
+-        // zombie sessions, e.g. one whose last log write was days ago) is safe
+-        // to delete, so it is not blocked here.
+-        if (ctx.agents.get(sessionId)?.status === 'running') {
++        const handle = ownedSessions.get(sessionId)
++        const live = ctx.agents.get(sessionId)
++        if (sessionCreations.has(sessionId) || sessionDeletions.has(sessionId)
++          || live?.status === 'running'
++          || (ctx.sessions.get(sessionId) !== undefined && handle?.agent !== live)
++          || (ctx.sessions.get(sessionId) !== undefined && handle === undefined)) {
+           return err(request, {
+             code: 'session-live',
+-            message: `cannot delete session '${sessionId}': a turn is currently running; stop or finish it first`,
++            message: `cannot delete session '${sessionId}': it is running, changing lifecycle, or owned by another component`,
+             details: { sessionId },
+           })
+         }
+-        const persistence = ctx.get('sessionPersistence')
+-        if (persistence !== undefined) {
+-          await persistence.delete(sessionId)
+-        }
+-        // Detach removes the id from every workspace account AND the
+-        // registry-global archive set, so no orphaned accounting or archive
+-        // entry survives the deleted log.
+-        await ctx.workspaceRegistry.detachSession(sessionId)
+-        // persistence.delete tears down the durable log but disposes no live
+-        // Session, so the session/disposed → host/session-removed path never
+-        // fires. Broadcast it directly so clients drop the stale row instead
+-        // of bucketing the deleted session under "Ungrouped".
+-        broadcastHost({ type: 'host/session-removed', sessionId })
+-        return ok(request, { archivedSessionIds: [...ctx.workspaceRegistry.archivedSessionIds] })
++        sessionDeletions.add(sessionId)
++        try {
++          // Only the creating consumer owns the capability to stop and detach
++          // this agent. Closing it prevents a later flush from reviving its log.
++          if (handle !== undefined) {
++            await handle.dispose()
++            ownedSessions.delete(sessionId)
++          }
++          const persistence = ctx.get('sessionPersistence')
++          if (persistence !== undefined) await persistence.delete(sessionId)
++          await ctx.workspaceRegistry.detachSession(sessionId)
++          broadcastHost({ type: 'host/session-removed', sessionId })
++          return ok(request, { archivedSessionIds: [...ctx.workspaceRegistry.archivedSessionIds] })
++        } finally {
++          sessionDeletions.delete(sessionId)
++        }
+       },
+     },
+ 
+diff --git a/packages/session/session-persistence/src/coordinator.ts b/packages/session/session-persistence/src/coordinator.ts
+index ac41498b92..22ea4202f6 100644
+--- a/packages/session/session-persistence/src/coordinator.ts
++++ b/packages/session/session-persistence/src/coordinator.ts
+@@ -673,35 +673,26 @@ export class PersistenceCoordinator<TornMarker = unknown> {
+   }
+ 
+   /**
+-   * Permanently delete one session: drain any live write-behind, release every
++   * Permanently delete one detached session: await retirement, release every
+    * in-memory trace of the id (live controller, tracked state, prepared
+-   * reservation, serialization chain), then remove the backend's durable bytes.
++   * reservation), after removing the backend's durable bytes.
+    * An id that is not tracked and has no stored artifact resolves as a no-op.
+-   * @param id - the session to delete.
++   * @param id - the detached session to delete.
++   * @param signal - optional cancellation while waiting or deleting.
+    * @returns resolution after the backend deletion is durable.
+    */
+-  delete(id: SessionId, signal?: AbortSignal): Promise<void> {
++  async delete(id: SessionId, signal?: AbortSignal): Promise<void> {
++    // Retirement flushes append through this same id queue. Await it before
++    // taking the queue, otherwise deletion and the final write deadlock.
++    await this.waitForRetirement(id, signal)
+     return this.serialize(id, async () => {
+-      // A live controller owns the id's write path; cancel its batching wait
+-      // and drain to quiescence so no buffered event can re-materialize the log
+-      // after the backend deletion below. Mirrors retireCore, then goes further.
+-      const liveSession = [...this.live.keys()].find(session => session.header.id === id)
+-      if (liveSession !== undefined) {
+-        const live = this.live.get(liveSession)
+-        if (live !== undefined) {
+-          live.writes.cancelAutomaticWait()
+-          await live.init.catch(() => {}) // serialized: init already settled ahead of us
+-          await live.writes.flush()
+-        }
+-        this.live.delete(liveSession)
+-        if (this.states.get(id)?.owner === liveSession) this.states.delete(id)
++      if (this.ctx.sessions.get(id) !== undefined) {
++        throw new Error(`cannot delete session "${id}" while it is live; dispose its owner first`)
+       }
+-      // Discard any prepared reservation for this id, then drop the tracked
+-      // state and the per-id serialization chain so a stale append cannot be
+-      // admitted against a deleted log.
++      // Preserve retryable bookkeeping if the backend deletion fails.
++      await this.backend.deleteStored(id, signal)
+       this.preparations.invalidate(id)
+       this.states.delete(id)
+-      await this.backend.deleteStored(id, signal)
+     }, signal)
+   }
+ 
+diff --git a/packages/session/session-persistence/src/index.ts b/packages/session/session-persistence/src/index.ts
+index d3ad01ca10..e2b29a3ad7 100644
+--- a/packages/session/session-persistence/src/index.ts
++++ b/packages/session/session-persistence/src/index.ts
+@@ -242,8 +242,8 @@ export abstract class SessionPersistence extends Service {
+   /**
+    * Permanently delete one persisted session: remove its durable bytes (per-session
+    * artifact or database rows) AND release every in-memory trace the persistence
+-   * seam holds for the id (live write-behind, tracked state, prepared reservation,
+-   * serialization chain). The backend MUST stop listing the id afterwards, and an
++   * seam holds for the id (tracked state and prepared reservation). Live sessions
++   * reject; dispose their owner first. Retirement drains before deletion. The backend MUST stop listing the id afterwards, and an
+    * id that is neither live nor stored must resolve as a no-op.
+    * @param id - the session to delete.
+    * @param signal - optional cancellation for backend deletion work.
