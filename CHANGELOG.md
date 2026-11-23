@@ -1,3 +1,17 @@
+# 0.5.1 — 2026-11-23
+
+- Add permanent deletion for archived sessions. The host route removes only the session-owned JSONL directory and detaches workspace, pin, and archive indexes. Running or owned sessions are refused. Project folders and exported files are kept.
+- Match the host page heading, row spacing, and focus behavior.
+
+# 0.5.0 — 2026-11-23
+
+- Adapt the Client to DSH 0.2.2-rc.5: replace removed runtime packages and `sessions.open` with the current Slot and `uiWorkspace` APIs.
+- Replace the fixed floating trigger with a native sidebar entry and responsive global panel.
+- Restore archived Sessions before opening them, as required by the current Workspace UI contract.
+- Remove permanent-deletion controls because the current Host has no Session deletion API; legacy Host patches are not applied.
+- Add Chinese/English locale dictionaries, plugin metadata and an original icon.
+- Preserve missing-metadata rows, prevent duplicate mutations, surface access and operation errors, and test the updated flows.
+
 # 0.4.1 — 2026-09-05
 
 - Fix false `session-live` rejection after opening history through the Remote/Typert resolver or forking a session: retain disposal handles on both paths.

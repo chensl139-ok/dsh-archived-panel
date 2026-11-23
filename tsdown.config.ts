@@ -3,29 +3,19 @@ import { defineConfig } from 'tsdown'
 /**
  * Self-contained tsdown config for the dsh-archived-panel client bundle.
  *
- * The browser half (`src/client/index.ts`) is bundled to `lib/client.js` as a
- * closure-factory artifact that the DSH client module loader loads and
- * resolves through its frozen module table. Only the DSH platform modules may
- * be left external — everything else must inline, because a cross-plugin
- * `@deepseek-ai/*` value import would either inline a duplicate runtime
- * instance or require a specifier the loader table cannot answer.
+ * The browser half (`src/client/index.ts`) is bundled to `lib/client.cjs`,
+ * then `scripts/wrap-client.mjs` wraps it as a current DSH Module Loader
+ * factory at `lib/client.js`. Only React is resolved by that loader at
+ * runtime. DSH Client imports in this package are type-only: no Harness
+ * Client implementation is bundled or required in the browser.
  *
  * This file intentionally does NOT import the harness monorepo's tsdown
  * preset (`packages/client/tsdown.client.ts`); it stands alone so the plugin
  * repo builds without a sibling harness checkout.
  */
 
-/** Specifiers the DSH client module table resolves at runtime (leave external). */
-const EXTERNALS = [
-  'react',
-  'react/jsx-runtime',
-  'react-dom',
-  'react-dom/client',
-  '@deepseek-ai/cordis',
-  '@deepseek-ai/dsh-client-ui-slots',
-  '@deepseek-ai/dsh-client-web-react',
-  '@deepseek-ai/dsh-client-ui-primitives',
-]
+/** Only the host-provided React runtime may remain a browser require. */
+const EXTERNALS = ['react', 'react/jsx-runtime', 'react-dom', 'react-dom/client']
 
 export default defineConfig([
   {

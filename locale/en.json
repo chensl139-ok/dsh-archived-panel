@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Archived sessions",
+    "description": "Open Archived sessions from the left sidebar to search, filter, and sort archived conversations, then restore one, restore and open it, or permanently delete its log. Deletion removes only that session's log and indexes, keeps the project folder, and refuses a running session."
+  }
+}
